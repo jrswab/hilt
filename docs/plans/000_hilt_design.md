@@ -12,7 +12,11 @@ This document captures the architecture and intent behind Hilt — a lightweight
 
 **Flow:** Telegram message → Go webserver (stateful orchestrator) → Assemble context → Axe `pkg/runner` (execution engine) → Return response to Telegram.
 
-> **Milestone 1 Blocker:** This design depends on [Axe Issue #80](https://github.com/jrswab/axe/issues/80) — extracting Axe's core execution logic into a public `pkg/runner` Go package so Hilt can import it as a library rather than shelling out to the CLI.
+> **Dependencies:**
+> - ✅ [Axe Issue #80](https://github.com/jrswab/axe/issues/80) — `pkg/runner` public API — **COMPLETE**
+> - 🔄 [Axe Issue #82](https://github.com/jrswab/axe/issues/82) — `Messages` field in `runner.Options` to pass pre-built conversation history — **BLOCKS turn 2+ history**
+>
+> Until Issue #82 is complete, ongoing turns must embed history in `opts.Prompt` as a formatted Markdown string (temporary workaround, tracked in the issue).
 
 ---
 
@@ -61,15 +65,54 @@ CREATE TABLE sessions (
 );
 ```
 
+#### Turn Object Schema
+
+Each entry in `turns_json`:
+
+```json
+{
+  "turn": 1,
+  "timestamp": "2026-05-06T14:30:00Z",
+  "user_message": "add a healthcheck endpoint",
+  "system_context_loaded": true,
+  "axe_result": {
+    "content": "I've added the healthcheck...",
+    "model": "anthropic/claude-3-haiku-4-5",
+    "input_tokens": 3421,
+    "output_tokens": 892,
+    "stop_reason": "end_turn",
+    "tool_calls": 2,
+    "tool_call_details": [
+      {
+        "name": "write_file",
+        "input": {"path": "health.go", "content": "..."},
+        "output": "wrote 45 lines",
+        "is_error": false,
+        "turn": 0,
+        "duration_ms": 12
+      }
+    ],
+    "refused": false,
+    "budget_exceeded": false
+  }
+}
+```
+
 - `title`: Auto-generated from the first user message (truncated to ~40 chars).
 - `turns_json`: The full conversation history used to assemble context for subsequent turns.
 - Only one row may have `archived_at IS NULL` (enforced by application logic).
+
+### Startup Behavior
+1. **No DB exists:** Hilt creates the database, directory structure, and a fresh empty session. The user can immediately start chatting.
+2. **DB exists, active session found (not stale):** Hilt loads `turns_json` and resumes the session. The user's next message is turn N+1 with full history passed to `runner.Run()`.
+3. **DB exists, active session stale (last activity > `session_ttl_days`):** Archive the stale session, trigger background maintenance on the archive, then create a fresh empty session.
+4. **Pruning:** On every startup, delete all archived sessions older than `session_ttl_days`.
 
 ### Session Lifecycle
 1. **New session:** Hilt loads AGENTS.md (workspace-specific rules), `memory/critical.md` (L1), today + yesterday's daily notes (L2). These are assembled into the first turn's context and sent to Axe via `runner.Run()`.
 2. **Ongoing turns:** Hilt assembles the full conversation history from `turns_json` plus the current user message, passing them as a proper message slice to `pkg/runner`.
 3. **Session end:** `/new`, TTL expiry, or server restart (session is already persisted).
-4. **Memory maintenance on `/new`:** When a session is archived, Hilt spawns a background goroutine that sends the session transcript to a lightweight memory maintenance agent. This agent appends to today's daily note, adds graph triples, and updates `critical.md` if needed. Maintenance is **non-blocking** — the user can start the new session immediately.
+4. **Memory maintenance on archive:** When a session is archived (via `/new` or stale startup archive), Hilt spawns a background goroutine that sends the session transcript to a lightweight memory maintenance agent. This agent appends to today's daily note, adds graph triples, and updates `critical.md` if needed. Maintenance is **non-blocking** — the user can start the new session immediately.
 
 ---
 
@@ -82,6 +125,7 @@ CREATE TABLE sessions (
 ├── hilt.sqlite          # Session and workflow persistence
 ├── agents/              # Flat TOML files for Axe discovery
 │   ├── main.toml        # Main agent (system prompt + tools)
+│   ├── maintenance.toml # Memory maintenance agent (auto-created)
 │   ├── edit-file.toml   # Skill: edit file
 │   └── summarize.toml   # Skill: summarize
 ├── skills/              # Parallel resource tree (scripts, docs)
@@ -125,6 +169,7 @@ CREATE TABLE sessions (
 - **Tools:** `read_file`, `write_file`, `edit_file`, `list_directory`, `run_command`
   - NO `url_fetch`, NO `web_search`
   - `run_command` is sandboxed to `~/.hilt/` by Axe (path traversal blocked)
+  - Network isolation: commands run in a separate network namespace via `unshare -n` (Linux only). OpenBSD and other Unix-likes receive path validation only, with no network sandbox.
 - **Memory ownership:** Hilt owns the memory structure and schemas. The agent writes content to well-defined files via tools.
 
 ### Command Agents (Skills)
@@ -136,7 +181,7 @@ CREATE TABLE sessions (
 
 ### Workflows
 - **No shell scripts.** Workflows are multi-agent orchestrations defined in SQLite and executed by Hilt in Go using `runner.Run()`.
-- Created interactively via the `/flow` command: user picks agents, their order, pause flags, and optional overrides.
+- Created interactively via the `/flow` command. Hilt guides the user through a conversational multi-step builder stored in memory keyed by chat ID. Each step asks for agent name, pause flag, model override, and prompt override. The state expires after 5 minutes of inactivity. Sending any non-flow message during creation cancels the flow.
 - **Execution:** Auto-advance with streaming status updates. Each step's output is posted to Telegram prefixed with `[step N/N: agent-name]`.
 - **Human-in-the-loop:** Steps with `requires_user_input: true` pause after execution. Hilt posts the step output plus a prompt, waits for the user's reply, then resumes.
 
@@ -191,6 +236,8 @@ Each step:
 2. Workflow name in SQLite? → Execute workflow via Go orchestration
 3. Agent TOML in `agents/`? → `runner.Run()` with agent name
 4. Unknown → "Command not found. Use /skills to see available commands."
+
+Names must be unique across agents and workflows. Hilt prevents collisions at creation time (writing TOMLs or inserting workflow rows).
 
 ### Skill TOML Extensions
 Hilt-specific metadata lives in a `[hilt]` table in the agent TOML. Axe's `toml.Unmarshal` silently ignores unknown sections, so no Axe changes are needed.
@@ -260,7 +307,26 @@ Hilt assembles the first turn using hierarchical Markdown headers:
 - **Daily notes:** Appended during session by the main agent; finalized by background maintenance on `/new`
 - **Graph triples:** Added during session when qualifying events occur
 - **Closet summaries:** On demand when scanning historical notes >7 days old
-- **Daily note creation:** Hilt creates an empty `memory/YYYY-MM-DD.md` skeleton at session start if missing.
+- **Daily note creation:** Hilt creates a `memory/YYYY-MM-DD.md` Wing/Hall template skeleton at session start if missing. Example:
+  ```markdown
+  # 2026-05-06
+
+  ## Wing: Work
+
+  ### Hall: decisions
+
+  ### Hall: events
+
+  ### Hall: discoveries
+
+  ### Hall: tasks
+
+  ### Hall: blockers
+
+  ## Wing: Health
+
+  ### Hall: metrics
+  ```
 
 ---
 
@@ -277,23 +343,26 @@ Hilt assembles the first turn using hierarchical Markdown headers:
 
 ## Error Handling
 
-Axe `runner.Run()` returns Go-idiomatic typed errors. Hilt switches on error type to produce user-friendly Telegram messages:
+Axe `runner.Run()` returns Go-idiomatic typed errors. Hilt switches on error type and provider category to produce user-friendly Telegram messages:
 
-| Error | User Message |
+| Actual Error | User Message |
 |-------|-------------|
-| `runner.ErrInvalidRequest` | "I couldn't process that request." + details |
-| `runner.ErrConfig` | "Configuration issue." + details |
-| `runner.ErrUnavailable` | "Service temporarily unavailable." + details |
-| `runner.ErrBudgetExceeded` | "Token limit reached. Start a new session with /new." + details |
-| `runner.ErrToolFailure` | "A tool failed during execution." + details |
+| `runner.ConfigError` | "Configuration issue: " + details |
+| `runner.BudgetExceededError` | "⚠️ Token budget exceeded (used X of Y). Start a new session with /new." |
+| `runner.RuntimeError` wrapping tool dispatch failure | "A tool failed during execution: " + details |
+| `runner.RuntimeError` with `ProviderCategory` = `ErrCategoryAuth` | "Authentication failed with the AI provider. Check your API key." |
+| `runner.RuntimeError` with `ProviderCategory` = `ErrCategoryRateLimit` | "Rate limit hit. Please wait a moment and try again." |
+| `runner.RuntimeError` with `ProviderCategory` = `ErrCategoryTimeout`/`Server`/`Overloaded` | "AI service temporarily unavailable. Please try again shortly." |
+| `runner.RuntimeError` (other) | "I couldn't process that request: " + details |
 
 ---
 
 ## Voice Message Transcription
 
 - Voice messages are transcribed locally using **whisper.cpp**.
-- **Deployment:** whisper.cpp compiled as a static binary, downloaded at install time for the user's platform (or built from a git submodule).
-- **Process:** Telegram sends voice as OGG Opus. Hilt converts if needed, shells out to `whisper-cli`, receives text, routes it as a text message.
+- **Deployment:** whisper.cpp compiled as a static binary, downloaded at install time for the user's platform (or built from a git submodule). `ffmpeg` is also installed by the install script as a runtime dependency.
+- **Process:** Telegram sends voice as OGG Opus. Hilt shells out to `ffmpeg` to convert to WAV (16kHz mono PCM), then shells out to `whisper-cli` with the **small** model (~466MB, default), receives text, routes it as a text message.
+- **Model override:** `whisper_model` in `config.toml` allows switching between `tiny`, `base`, `small`, `medium`, `large`.
 - **Privacy:** All transcription is local. No voice data leaves the machine.
 
 ---
@@ -308,6 +377,18 @@ workspace_dir = "~/.hilt"
 session_ttl_days = 30
 main_agent_model = "anthropic/claude-3-haiku-4-5"
 context_window_default = 200000
+maintenance_agent_model = "openrouter/deepseek/deepseek-chat"
+whisper_model = "small"
+
+# Allowed Telegram user IDs. Empty = no restriction (development mode).
+# Hilt drops messages from unauthorized users silently.
+allowed_user_ids = [123456789]
+
+# Model context window overrides and additions.
+# Models known to Hilt have built-in defaults. Add or override here:
+[models]
+"grok-4" = 131072
+"custom-local-model" = 64000
 ```
 
 ### API Keys
@@ -335,22 +416,22 @@ An install script collects required data and sets up the environment:
 | Stateless vs stateful | **Stateful orchestrator** |
 | Session persistence | **SQLite** (`~/.config/hilt/hilt.sqlite`) with pure-Go `modernc.org/sqlite` |
 | Sessions per user | **One active globally** (single-user design) |
-| Main agent context delivery | **Message slice to `pkg/runner`** (proper history, not stdin embedding) |
+| Main agent context delivery | **Depends on Axe Issue #82** — `runner.Options.Messages` for history assembly. Until then: Markdown-formatted string via `opts.Prompt` |
 | Agent directory layout | **Hybrid**: flat `agents/` for TOML, parallel `skills/` for resources |
-| Main agent tools | **`read_file`, `write_file`, `edit_file`, `list_directory`, `run_command`** |
+| Main agent tools | **`read_file`, `write_file`, `edit_file`, `list_directory`, `run_command`** (network-isolated on Linux via `unshare -n`; path-based sandboxing on all unix-likes) |
 | Telegram mode | **Long-polling** (60s timeout) |
 | Configuration | **Separate `~/.config/hilt/config.toml`** + env vars for API keys |
-| Execution model | **Import Axe `pkg/runner`** (blocked on Axe Issue #80) |
+| Execution model | **Import Axe `pkg/runner`** (Issue #80 complete) |
 | Command resolution | **Built-ins → workflows → agents** |
 | `/delete` behavior | **Removes TOML + skills/ resources + workflows** |
 | Token tracking | **Per-turn reactive** — `result.InputTokens` from Axe, no tiktoken-go |
-| Token warning | **80% of model context window** based on per-turn input |
+| Token warning | **80% of model context window**. Lookup: built-in model map → `[models]` override table → `context_window_default` |
 | Workspace directory | **Configurable, default `~/.hilt`** |
 | Memory ownership | **Hilt owns structure**, agent writes content via tools |
 | Context format | **Hierarchical Markdown headers with role labels** |
 | System prompt split | **Permanent memory instructions in `main.toml`; workspace rules in AGENTS.md (turn 1 only)** |
-| History on turn 2+ | **Proper message slice via `pkg/runner`** |
-| Session title | **Auto-generated from first message** |
+| History on turn 2+ | **Proper message slice via `pkg/runner`** (blocked by Axe Issue #82; temporary: history embedded in `opts.Prompt` string) |
+| Session title | **Deterministic truncation** — first user message trimmed to 40 runes, no LLM call |
 | Error communication | **Go-idiomatic typed errors from `pkg/runner`** |
 | Concurrency model | **Single goroutine** (single-user, simple) |
 | Session context for skills | **Opt-in via `[hilt] load_session = true` in agent TOML** |
@@ -361,3 +442,5 @@ An install script collects required data and sets up the environment:
 | Workflow security | **No shell scripts** — pure Go orchestration via Axe library |
 | Voice messages | **Transcribed locally via whisper.cpp**, downloaded at install |
 | Memory maintenance on `/new` | **Background goroutine**, non-blocking to user |
+
+**Not supported:** Session resume from archives. Archived sessions are read-only. Use `/new` and rely on persistent memory (critical.md, daily notes, graph) for continuity.
