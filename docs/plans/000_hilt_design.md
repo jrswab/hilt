@@ -14,9 +14,7 @@ This document captures the architecture and intent behind Hilt — a lightweight
 
 > **Dependencies:**
 > - ✅ [Axe Issue #80](https://github.com/jrswab/axe/issues/80) — `pkg/runner` public API — **COMPLETE**
-> - 🔄 [Axe Issue #82](https://github.com/jrswab/axe/issues/82) — `Messages` field in `runner.Options` to pass pre-built conversation history — **BLOCKS turn 2+ history**
->
-> Until Issue #82 is complete, ongoing turns must embed history in `opts.Prompt` as a formatted Markdown string (temporary workaround, tracked in the issue).
+> - ✅ [Axe Issue #82](https://github.com/jrswab/axe/issues/82) — `Messages` field in `runner.Options` for conversation history — **COMPLETE**
 
 ---
 
@@ -110,7 +108,7 @@ Each entry in `turns_json`:
 
 ### Session Lifecycle
 1. **New session:** Hilt loads AGENTS.md (workspace-specific rules), `memory/critical.md` (L1), today + yesterday's daily notes (L2). These are assembled into the first turn's context and sent to Axe via `runner.Run()`.
-2. **Ongoing turns:** Hilt assembles the full conversation history from `turns_json` plus the current user message, passing them as a proper message slice to `pkg/runner`.
+2. **Ongoing turns:** Hilt assembles the full conversation history from `turns_json` into a `[]runner.Message` slice, sets it on `runner.Options.Messages`, and appends the current user message. Axe receives proper message roles for multi-turn context.
 3. **Session end:** `/new`, TTL expiry, or server restart (session is already persisted).
 4. **Memory maintenance on archive:** When a session is archived (via `/new` or stale startup archive), Hilt spawns a background goroutine that sends the session transcript to a lightweight memory maintenance agent. This agent appends to today's daily note, adds graph triples, and updates `critical.md` if needed. Maintenance is **non-blocking** — the user can start the new session immediately.
 
@@ -416,7 +414,7 @@ An install script collects required data and sets up the environment:
 | Stateless vs stateful | **Stateful orchestrator** |
 | Session persistence | **SQLite** (`~/.config/hilt/hilt.sqlite`) with pure-Go `modernc.org/sqlite` |
 | Sessions per user | **One active globally** (single-user design) |
-| Main agent context delivery | **Depends on Axe Issue #82** — `runner.Options.Messages` for history assembly. Until then: Markdown-formatted string via `opts.Prompt` |
+| Main agent context delivery | **`runner.Options.Messages`** for history assembly on turn 2+ |
 | Agent directory layout | **Hybrid**: flat `agents/` for TOML, parallel `skills/` for resources |
 | Main agent tools | **`read_file`, `write_file`, `edit_file`, `list_directory`, `run_command`** (network-isolated on Linux via `unshare -n`; path-based sandboxing on all unix-likes) |
 | Telegram mode | **Long-polling** (60s timeout) |
@@ -430,7 +428,7 @@ An install script collects required data and sets up the environment:
 | Memory ownership | **Hilt owns structure**, agent writes content via tools |
 | Context format | **Hierarchical Markdown headers with role labels** |
 | System prompt split | **Permanent memory instructions in `main.toml`; workspace rules in AGENTS.md (turn 1 only)** |
-| History on turn 2+ | **Proper message slice via `pkg/runner`** (blocked by Axe Issue #82; temporary: history embedded in `opts.Prompt` string) |
+| History on turn 2+ | **Proper message slice via `pkg/runner`** (`runner.Options.Messages`) |
 | Session title | **Deterministic truncation** — first user message trimmed to 40 runes, no LLM call |
 | Error communication | **Go-idiomatic typed errors from `pkg/runner`** |
 | Concurrency model | **Single goroutine** (single-user, simple) |
