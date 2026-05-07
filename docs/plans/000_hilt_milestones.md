@@ -74,7 +74,7 @@ All milestones are **tracer bullets** — vertical, end-to-end slices that prove
 
 ---
 
-- [ ] **001: Bootstrap — Initialize Go module and core packages**
+- [x] **001: Bootstrap — Initialize Go module and core packages**
   - Initialize `go.mod` with correct Axe and SQLite dependencies
   - Create `cmd/hilt/main.go` entry point
   - Scaffold `internal/config/`, `internal/db/`, `internal/session/`, `internal/memory/`, `internal/telegram/`, `internal/server/` packages
