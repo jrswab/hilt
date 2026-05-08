@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	"log/slog"
+
+	"github.com/jrswab/hilt/internal/config"
 )
 
 const version = "0.1.0"
@@ -58,6 +60,19 @@ func main() {
 	)
 	logger.Debug("resolved config", slog.String("path", configPath))
 
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		logger.Error("failed to load config", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	logger.Info("config loaded",
+		slog.String("path", configPath),
+		slog.String("workspace_dir", cfg.WorkspaceDir),
+	)
+
+	// cfg is available for downstream use (e.g., Telegram bot, session manager).
+	_ = cfg
+
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		syscall.SIGINT,
@@ -65,8 +80,11 @@ func main() {
 	)
 	defer stop()
 
-	<-ctx.Done()
-	logger.Info("shutting down")
+	// TODO: initialise Telegram bot, session manager, etc.
+
+	_ = ctx // placate compiler until server loop is wired in
+
+	logger.Info("waiting for signals...")
 	logger.Info("server not yet implemented")
 	os.Exit(0)
 }

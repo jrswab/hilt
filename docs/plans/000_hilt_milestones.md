@@ -81,7 +81,7 @@ All milestones are **tracer bullets** — vertical, end-to-end slices that prove
   - Create empty `errors.go` in `internal/` for shared error types
   - Establish logging (`log/slog`) and basic CLI flag/env var wiring
 
-- [ ] **002: Config — Load and validate `config.toml` on startup**
+- [x] **002: Config — Load and validate `config.toml` on startup**
   - Define `Config` struct matching design doc schema (bot token, workspace dir, model, context window, etc.)
   - Parse `~/.config/hilt/config.toml` via `BurntSushi/toml`
   - Fall back to environment variables for bot token and API keys
