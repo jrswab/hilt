@@ -27,8 +27,8 @@ Existing files:
 | User model | **Single-user permanently** | Personal assistant, not SaaS. Keeps schema, concurrency, and auth simple. |
 | Development style | **Vertical traces** | Build MVP as a complete end-to-end slice, then layer features. Prevents horizontal half-finished work. |
 | Message persistence | **Hybrid (C) + Delta-only (B)** | Journal-style `turns` table + separate `sessions` metadata table. Each turn row stores `new_messages_json` (delta) — only the messages added in that turn. Reconstruct by iterating all turns in order. O(N) storage. |
+| Install script | **Shell script (`install.sh`) built early and updated incrementally** | Trace-bullet ethos: enables real manual testing at every milestone instead of retrofitting setup into an existing system. |
 | First-run bootstrap | **Go binary auto-creates everything** | Server auto-creates `~/.config/hilt/` directories, SQLite DB, default `main.toml`, stub `AGENTS.md`. `config.toml` is auto-generated with empty values; user fills it in (or uses env vars). |
-| Install script | **Shell script (`install.sh`) deferred** | For public convenience only. User can self-deploy. Script written after Go binary is stable and paths/schemas are finalized. |
 | Telegram integration | **`gotgbot/v2`** | Modern, actively maintained, better `context.Context` support than `telegram-bot-api/v5`. |
 | HTTP vs library | **Telegram library** | Full-featured, handles edge cases. Zero risk for our simple needs (text, voice, file download). |
 | Package layout | **Minimal MVP** | Create only packages needed for MVP: `config`, `telegram`, `session`, `memory`, `server`. Defer `workflow`, `voice`, `agents` (will be thin wrappers during MVP). |
@@ -61,10 +61,10 @@ Existing files:
 3. **Vertical traces?** → Yes. Build end-to-end, not layer by layer.
 4. **Message persistence format?** → Hybrid journal table. Delta-only new messages per turn.
 5. **Auto-generation of files?** → Go binary creates everything on first run.
-6. **Install script timing?** → After Go binary is stable.
+6. **Install script timing?** → Build early, update incrementally.
 7. **Telegram library?** → `gotgbot/v2`.
 8. **Package layout?** → Minimal MVP: `config`, `telegram`, `session`, `memory`, `server`.
-9. **Go binary or install.sh first?** → Go binary first.
+9. **Go binary or install.sh first?** → Build install.sh early, update incrementally.
 
 ---
 

@@ -397,13 +397,17 @@ allowed_user_ids = [123456789]
 
 ## Installation
 
-An install script collects required data and sets up the environment:
+An install script (`install.sh`) sets up the environment incrementally — evolving alongside Hilt as features are added:
 - Telegram bot token
 - Confirmation of environment variable setup (API keys via Doppler or other secret manager)
 - Workspace directory path (defaults to `~/.hilt`)
 - Creates directory structure (`~/.config/hilt/`, `~/.hilt/memory/`, etc.)
-- Downloads whisper.cpp binary for the host platform
-- Provides systemd unit file template
+- Writes default `config.toml`, `agents/main.toml`, `AGENTS.md`
+- Writes systemd unit file template
+- Builds the Hilt binary
+- whisper.cpp binary will be downloaded at install time for the host platform (post-MVP)
+
+> **Trace-bullet decision:** The install script is built early and updated as we go. This enables real manual testing at every milestone instead of retrofitting setup into an existing system.
 
 ---
 
