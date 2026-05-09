@@ -121,7 +121,7 @@ All milestones are **tracer bullets** — vertical, end-to-end slices that prove
   - Pass assembled prompt to Axe `runner.Run()` as `Prompt`
   - Persist turn 1 to `turns` table with `new_messages_json`
 
-- [ ] **007: Turn 2+ — Conversation history via `runner.Options.Messages`**
+- [x] **007: Turn 2+ — Conversation history via `runner.Options.Messages`**
   - Load all prior turns from `turns` table
   - Reconstruct `[]runner.Message` by iterating turns in order
   - Append current user message

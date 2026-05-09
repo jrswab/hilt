@@ -52,10 +52,88 @@ type Messenger interface {
 	SendMessage(ctx context.Context, chatID int64, text string) error
 }
 
-// message is a lightweight representation for JSON persistence.
-type message struct {
-	Role    string `json:"role"`
+// persistedMessage is the hilt-agnostic JSON shape stored in new_messages_json.
+type persistedMessage struct {
+	Role         string                `json:"role"`
+	Content      string                `json:"content"`
+	ToolCalls    []persistedToolCall   `json:"tool_calls,omitempty"`
+	ToolResults  []persistedToolResult `json:"tool_results,omitempty"`
+}
+
+// persistedToolCall is the JSON shape for a tool call in new_messages_json.
+type persistedToolCall struct {
+	ID        string            `json:"id"`
+	Name      string            `json:"name"`
+	Arguments map[string]string `json:"arguments"`
+}
+
+// persistedToolResult is the JSON shape for a tool result in new_messages_json.
+type persistedToolResult struct {
+	CallID  string `json:"call_id"`
 	Content string `json:"content"`
+	IsError bool   `json:"is_error"`
+}
+
+// toRunnerMessages converts persisted messages to runner messages (lossless).
+func toRunnerMessages(msgs []persistedMessage) []runner.Message {
+	out := make([]runner.Message, len(msgs))
+	for i, m := range msgs {
+		tcs := make([]runner.ToolCall, len(m.ToolCalls))
+		for j, tc := range m.ToolCalls {
+			args := make(map[string]string, len(tc.Arguments))
+			for k, v := range tc.Arguments {
+				args[k] = v
+			}
+			tcs[j] = runner.ToolCall{ID: tc.ID, Name: tc.Name, Arguments: args}
+		}
+		trs := make([]runner.ToolResult, len(m.ToolResults))
+		for j, tr := range m.ToolResults {
+			trs[j] = runner.ToolResult{CallID: tr.CallID, Content: tr.Content, IsError: tr.IsError}
+		}
+		out[i] = runner.Message{
+			Role:        m.Role,
+			Content:     m.Content,
+			ToolCalls:   tcs,
+			ToolResults: trs,
+		}
+	}
+	return out
+}
+
+// fromRunnerMessages converts runner messages to persisted messages (lossless).
+func fromRunnerMessages(msgs []runner.Message) []persistedMessage {
+	out := make([]persistedMessage, len(msgs))
+	for i, m := range msgs {
+		tcs := make([]persistedToolCall, len(m.ToolCalls))
+		for j, tc := range m.ToolCalls {
+			args := make(map[string]string, len(tc.Arguments))
+			for k, v := range tc.Arguments {
+				args[k] = v
+			}
+			tcs[j] = persistedToolCall{ID: tc.ID, Name: tc.Name, Arguments: args}
+		}
+		trs := make([]persistedToolResult, len(m.ToolResults))
+		for j, tr := range m.ToolResults {
+			trs[j] = persistedToolResult{CallID: tr.CallID, Content: tr.Content, IsError: tr.IsError}
+		}
+		out[i] = persistedMessage{
+			Role:        m.Role,
+			Content:     m.Content,
+			ToolCalls:   tcs,
+			ToolResults: trs,
+		}
+	}
+	return out
+}
+
+const userRole = "user"
+const assistantRole = "assistant"
+const toolRole = "tool"
+
+var validRoles = map[string]bool{
+	userRole:      true,
+	assistantRole: true,
+	toolRole:      true,
 }
 
 // Processor is the main agent execution orchestrator.
@@ -68,6 +146,7 @@ type Processor struct {
 	model     string
 	runner    Runner
 	messenger Messenger
+	history   HistoryBuilder
 	logger    *slog.Logger
 }
 
@@ -82,6 +161,7 @@ func NewProcessor(
 	agentsDir string,
 	model string,
 	logger *slog.Logger,
+	history HistoryBuilder,
 ) *Processor {
 	if sessions == nil {
 		panic("sessions must not be nil")
@@ -101,6 +181,9 @@ func NewProcessor(
 	if messenger == nil {
 		panic("messenger must not be nil")
 	}
+	if history == nil {
+		panic("history must not be nil")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -113,6 +196,7 @@ func NewProcessor(
 		model:     model,
 		runner:    runner,
 		messenger: messenger,
+		history:   history,
 		logger:    logger,
 	}
 }
@@ -200,8 +284,7 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 	}
 
 	if turnCount > 0 {
-		_ = p.messenger.SendMessage(ctx, chatID, "Message received. The main agent is not yet online for turn 2+.")
-		return nil
+		return p.processTurn2Plus(ctx, chatID, trimmed, session, turnCount)
 	}
 
 	// Turn 1
@@ -233,8 +316,8 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 	}
 
 	// Build delta with just the assistant response (only thing we have from Result)
-	delta := []message{
-		{Role: "assistant", Content: result.Content},
+	delta := []persistedMessage{
+		{Role: assistantRole, Content: result.Content},
 	}
 	deltaJSON, err := json.Marshal(delta)
 	if err != nil {
@@ -279,3 +362,73 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 	}
 	return nil
 }
+
+// processTurn2Plus handles turns 2+ using conversation history via opts.Messages.
+func (p *Processor) processTurn2Plus(ctx context.Context, chatID int64, trimmed string, session *session.Session, turnCount int) error {
+	historyMsgs, err := p.history.BuildMessages(ctx, session.ID)
+	if err != nil {
+		p.logger.Error("build messages failed", slog.Any("error", err))
+		_ = p.messenger.SendMessage(ctx, chatID, "Something went wrong loading conversation history.")
+		return nil
+	}
+
+	// Append current user message to history
+	historyMsgs = append(historyMsgs, runner.Message{Role: userRole, Content: trimmed})
+
+	opts := runner.Options{
+		AgentName:  "main",
+		AgentsDirs: []string{p.agentsDir},
+		Model:      p.model,
+		Messages:   historyMsgs,
+	}
+
+	result, err := p.runner.Run(ctx, opts)
+	if err != nil {
+		p.logger.Error("runner failed", slog.Any("error", err))
+		_ = p.messenger.SendMessage(ctx, chatID, "I couldn't process that request: "+err.Error())
+		return nil
+	}
+
+	if result == nil {
+		p.logger.Error("runner returned nil result")
+		_ = p.messenger.SendMessage(ctx, chatID, "I couldn't process that request: unexpected empty result")
+		return nil
+	}
+
+	delta := computeDelta(historyMsgs, result)
+	persistedDelta := fromRunnerMessages(delta)
+	deltaJSON, err := json.Marshal(persistedDelta)
+	if err != nil {
+		p.logger.Error("marshal delta failed", slog.Any("error", err))
+		_ = p.messenger.SendMessage(ctx, chatID, extractReply(result))
+		return nil
+	}
+
+	// Record turn
+	if err := p.turns.RecordTurn(ctx, session.ID, turnCount+1, trimmed, string(deltaJSON)); err != nil {
+		p.logger.Error("record turn failed", slog.Any("error", err))
+		_ = p.messenger.SendMessage(ctx, chatID, extractReply(result))
+		return nil
+	}
+
+	// Update session tokens
+	if err := p.store.UpdateSessionTokens(ctx, session.ID, int64(result.InputTokens), int64(result.OutputTokens)); err != nil {
+		p.logger.Error("update session tokens failed", slog.Any("error", err))
+		_ = p.messenger.SendMessage(ctx, chatID, extractReply(result))
+		return nil
+	}
+
+	// Update last activity
+	if err := p.sessions.UpdateSessionActivity(ctx); err != nil {
+		p.logger.Error("update session activity failed", slog.Any("error", err))
+		_ = p.messenger.SendMessage(ctx, chatID, extractReply(result))
+		return nil
+	}
+
+	reply := extractReply(result)
+	if err := p.messenger.SendMessage(ctx, chatID, reply); err != nil {
+		return err
+	}
+	return nil
+}
+

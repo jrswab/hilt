@@ -122,6 +122,19 @@ func (f *fakeStore) SetSessionTitle(_ context.Context, sessionID int64, title st
 	return nil
 }
 
+// fakeHistoryBuilder implements history building for tests
+type fakeHistoryBuilder struct {
+	messages []runner.Message
+	err      error
+}
+
+func (f *fakeHistoryBuilder) BuildMessages(_ context.Context, _ int64) ([]runner.Message, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.messages, nil
+}
+
 // --- Context assembly tests ---
 
 func TestAssembleContextAllSections(t *testing.T) {
@@ -300,7 +313,7 @@ func TestProcessTurnSuccess(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "  Hello LLM  ")
@@ -360,7 +373,7 @@ func TestProcessTurnRunnerError(t *testing.T) {
 	runner := &fakeRunner{err: fmt.Errorf("API rate limit")}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Hello")
@@ -391,7 +404,7 @@ func TestProcessTurnNilResult(t *testing.T) {
 	runner := &fakeRunner{result: nil}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Hello")
@@ -401,30 +414,6 @@ func TestProcessTurnNilResult(t *testing.T) {
 
 	if !strings.Contains(messenger.lastText, "unexpected empty result") {
 		t.Errorf("expected nil result message, got %q", messenger.lastText)
-	}
-}
-
-func TestProcessTurnTurn2Plus(t *testing.T) {
-	workspace := t.TempDir()
-	reader := memory.NewReader(workspace)
-	sessions := &fakeSessions{}
-	turns := newFakeTurns()
-	turns.count = 1
-	store := newFakeStore()
-	messenger := &fakeMessenger{}
-	runner := &fakeRunner{result: &runner.Result{Content: "ok"}}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
-
-	ctx := context.Background()
-	err := p.ProcessTurn(ctx, 12345, "Hello again")
-	if err != nil {
-		t.Fatalf("ProcessTurn returned error: %v", err)
-	}
-
-	if !strings.Contains(messenger.lastText, "not yet online for turn 2+") {
-		t.Errorf("expected turn 2+ message, got %q", messenger.lastText)
 	}
 }
 
@@ -439,7 +428,7 @@ func TestProcessTurnRecordTurnErrorStillSendsReply(t *testing.T) {
 	runner := &fakeRunner{result: &runner.Result{Content: "Reply content", InputTokens: 10, OutputTokens: 5}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Hello")
@@ -462,7 +451,7 @@ func TestProcessTurnMessengerErrorPropagates(t *testing.T) {
 	runner := &fakeRunner{result: &runner.Result{Content: "Reply", InputTokens: 10, OutputTokens: 5}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Hello")
@@ -482,7 +471,7 @@ func TestProcessTurnSessionTokensErrorStillSendsReply(t *testing.T) {
 	runner := &fakeRunner{result: &runner.Result{Content: "LLM says hi", InputTokens: 5, OutputTokens: 5}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Hello")
@@ -506,13 +495,271 @@ func TestProcessTurnNoTitleWhenAlreadySet(t *testing.T) {
 	runner := &fakeRunner{result: &runner.Result{Content: "ok", InputTokens: 1, OutputTokens: 1}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
 
 	ctx := context.Background()
 	p.ProcessTurn(ctx, 1, "Message 1")
 
 	if _, ok := store.titles[1]; ok {
 		t.Error("title should not be updated when session already has a title")
+	}
+}
+
+// --- Turn 2+ tests ---
+
+func TestProcessTurnTurn2PlusSuccess(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	turns.count = 1
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	fakeHistory := &fakeHistoryBuilder{
+		messages: []runner.Message{
+			{Role: "user", Content: "Hello"},
+			{Role: "assistant", Content: "Hi there"},
+		},
+	}
+
+	// Runner returns the full conversation including the new turn
+	runner := &fakeRunner{
+		result: &runner.Result{
+			Messages: []runner.Message{
+				{Role: "user", Content: "Hello"},
+				{Role: "assistant", Content: "Hi there"},
+				{Role: "user", Content: "How are you?"},
+				{Role: "assistant", Content: "I'm fine, thanks."},
+			},
+			Content:      "I'm fine, thanks.",
+			InputTokens:  50,
+			OutputTokens: 25,
+		},
+	}
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "How are you?")
+	if err != nil {
+		t.Fatalf("ProcessTurn: %v", err)
+	}
+
+	if messenger.lastText != "I'm fine, thanks." {
+		t.Errorf("reply = %q, want \"I'm fine, thanks.\"", messenger.lastText)
+	}
+
+	if turns.recorded["turnNum"] != 2 {
+		t.Errorf("turnNum = %v, want 2", turns.recorded["turnNum"])
+	}
+	if turns.recorded["userMessage"] != "How are you?" {
+		t.Errorf("userMessage = %v, want \"How are you?\"", turns.recorded["userMessage"])
+	}
+
+	// Verify the delta persisted is the new assistant response only
+	// (the user message is already in the sent slice, not the delta)
+	deltaJSON := turns.recorded["newMessagesJSON"].(string)
+	if strings.Contains(deltaJSON, `"role":"user"`) {
+		t.Errorf("delta should not contain user role (it's already in sent): %s", deltaJSON)
+	}
+	if !strings.Contains(deltaJSON, `"role":"assistant"`) {
+		t.Errorf("delta missing assistant role: %s", deltaJSON)
+	}
+
+	if store.tokens["input"] != 50 {
+		t.Errorf("input tokens = %d, want 50", store.tokens["input"])
+	}
+	if store.tokens["output"] != 25 {
+		t.Errorf("output tokens = %d, want 25", store.tokens["output"])
+	}
+	if !sessions.activityCalled {
+		t.Error("UpdateSessionActivity was not called")
+	}
+}
+
+func TestProcessTurnTurn2PlusWithToolCalls(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	turns.count = 1
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	fakeHistory := &fakeHistoryBuilder{
+		messages: []runner.Message{
+			{Role: "user", Content: "Hello"},
+			{Role: "assistant", Content: "Hi there"},
+		},
+	}
+
+	// Runner returns result with tool calls in the delta
+	runner := &fakeRunner{
+		result: &runner.Result{
+			Messages: []runner.Message{
+				{Role: "user", Content: "Hello"},
+				{Role: "assistant", Content: "Hi there"},
+				{Role: "user", Content: "Run the calc"},
+				{Role: "assistant", Content: "", ToolCalls: []runner.ToolCall{{ID: "call_1", Name: "calc", Arguments: map[string]string{"x": "1"}}}},
+				{Role: "tool", Content: "", ToolResults: []runner.ToolResult{{CallID: "call_1", Content: "2", IsError: false}}},
+				{Role: "assistant", Content: "Result is 2."},
+			},
+			Content: "Result is 2.",
+		},
+	}
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Run the calc")
+	if err != nil {
+		t.Fatalf("ProcessTurn: %v", err)
+	}
+
+	if messenger.lastText != "Result is 2." {
+		t.Errorf("reply = %q, want \"Result is 2.\"", messenger.lastText)
+	}
+
+	deltaJSON := turns.recorded["newMessagesJSON"].(string)
+	if !strings.Contains(deltaJSON, `"tool_calls"`) {
+		t.Errorf("delta missing tool_calls: %s", deltaJSON)
+	}
+	if !strings.Contains(deltaJSON, `"tool_results"`) {
+		t.Errorf("delta missing tool_results: %s", deltaJSON)
+	}
+	if !strings.Contains(deltaJSON, `"id":"call_1"`) {
+		t.Errorf("delta missing tool call id: %s", deltaJSON)
+	}
+	if !strings.Contains(deltaJSON, `"call_id":"call_1"`) {
+		t.Errorf("delta missing tool result call_id: %s", deltaJSON)
+	}
+}
+
+func TestProcessTurnTurn2PlusNilMessagesFallback(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	turns.count = 1
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	fakeHistory := &fakeHistoryBuilder{
+		messages: []runner.Message{
+			{Role: "user", Content: "Hello"},
+			{Role: "assistant", Content: "Hi there"},
+		},
+	}
+
+	// Runner returns nil Messages, should fallback to Content
+	runner := &fakeRunner{
+		result: &runner.Result{
+			Messages: nil,
+			Content:  "Fallback reply",
+		},
+	}
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "How are you?")
+	if err != nil {
+		t.Fatalf("ProcessTurn: %v", err)
+	}
+
+	if messenger.lastText != "Fallback reply" {
+		t.Errorf("reply = %q, want \"Fallback reply\"", messenger.lastText)
+	}
+
+	deltaJSON := turns.recorded["newMessagesJSON"].(string)
+	if !strings.Contains(deltaJSON, `"role":"assistant"`) {
+		t.Errorf("fallback delta missing assistant role: %s", deltaJSON)
+	}
+	if !strings.Contains(deltaJSON, "Fallback reply") {
+		t.Errorf("fallback delta missing content: %s", deltaJSON)
+	}
+}
+
+func TestProcessTurnTurn2PlusHistoryError(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	turns.count = 1
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	runner := &fakeRunner{result: &runner.Result{Content: "should not run"}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	fakeHistory := &fakeHistoryBuilder{err: fmt.Errorf("corrupted db")}
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "How are you?")
+	if err != nil {
+		t.Fatalf("ProcessTurn should not return error: %v", err)
+	}
+
+	if !strings.Contains(messenger.lastText, "Something went wrong loading conversation history") {
+		t.Errorf("expected history error message, got %q", messenger.lastText)
+	}
+
+	// No turn should be recorded
+	if len(turns.recorded) > 0 {
+		t.Error("no turn should be recorded when history fails")
+	}
+}
+
+func TestProcessTurnTurn2PlusTokenAccumulation(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	turns.count = 2
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	fakeHistory := &fakeHistoryBuilder{
+		messages: []runner.Message{
+			{Role: "user", Content: "A"},
+			{Role: "assistant", Content: "B"},
+			{Role: "user", Content: "C"},
+			{Role: "assistant", Content: "D"},
+		},
+	}
+
+	runner := &fakeRunner{
+		result: &runner.Result{
+			Messages: []runner.Message{
+				{Role: "user", Content: "A"},
+				{Role: "assistant", Content: "B"},
+				{Role: "user", Content: "C"},
+				{Role: "assistant", Content: "D"},
+				{Role: "user", Content: "E"},
+				{Role: "assistant", Content: "F"},
+			},
+			Content:      "F",
+			InputTokens:  30,
+			OutputTokens: 15,
+		},
+	}
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "E")
+	if err != nil {
+		t.Fatalf("ProcessTurn: %v", err)
+	}
+
+	if turns.recorded["turnNum"] != 3 {
+		t.Errorf("turnNum = %v, want 3", turns.recorded["turnNum"])
 	}
 }
 
@@ -524,17 +771,19 @@ func TestNewProcessorPanicsOnNil(t *testing.T) {
 	fr := &fakeRunner{}
 	fm := &fakeMessenger{}
 	reader := memory.NewReader(t.TempDir())
+	fh := &fakeHistoryBuilder{}
 
 	tests := []struct {
 		name string
 		fn   func()
 	}{
-		{"sessions nil", func() { NewProcessor(nil, ft, fst, reader, fr, fm, "", "", logger) }},
-		{"turns nil", func() { NewProcessor(fs, nil, fst, reader, fr, fm, "", "", logger) }},
-		{"store nil", func() { NewProcessor(fs, ft, nil, reader, fr, fm, "", "", logger) }},
-		{"reader nil", func() { NewProcessor(fs, ft, fst, nil, fr, fm, "", "", logger) }},
-		{"runner nil", func() { NewProcessor(fs, ft, fst, reader, nil, fm, "", "", logger) }},
-		{"messenger nil", func() { NewProcessor(fs, ft, fst, reader, fr, nil, "", "", logger) }},
+		{"sessions nil", func() { NewProcessor(nil, ft, fst, reader, fr, fm, "", "", logger, fh) }},
+		{"turns nil", func() { NewProcessor(fs, nil, fst, reader, fr, fm, "", "", logger, fh) }},
+		{"store nil", func() { NewProcessor(fs, ft, nil, reader, fr, fm, "", "", logger, fh) }},
+		{"reader nil", func() { NewProcessor(fs, ft, fst, nil, fr, fm, "", "", logger, fh) }},
+		{"runner nil", func() { NewProcessor(fs, ft, fst, reader, nil, fm, "", "", logger, fh) }},
+		{"messenger nil", func() { NewProcessor(fs, ft, fst, reader, fr, nil, "", "", logger, fh) }},
+		{"history nil", func() { NewProcessor(fs, ft, fst, reader, fr, fm, "", "", logger, nil) }},
 	}
 
 	for _, tt := range tests {

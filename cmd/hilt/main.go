@@ -156,16 +156,18 @@ func main() {
 
 	memoryReader := memory.NewReader(cfg.WorkspaceDir)
 	agentsDir := filepath.Join(dbDir, "agents")
+	historyBuilder := mainagent.NewHistoryBuilder(mgr)
 	processor := mainagent.NewProcessor(
-		mgr,           // ActiveSessionProvider
-		mgr,           // TurnStore
-		mgr,           // SessionStore
-		memoryReader,  // FileReader
-		&axeRunner{},  // Runner
-		bot,           // Messenger
+		mgr,            // ActiveSessionProvider
+		mgr,            // TurnStore
+		mgr,            // SessionStore
+		memoryReader,   // FileReader
+		&axeRunner{},   // Runner
+		bot,            // Messenger
 		agentsDir,
 		cfg.MainAgentModel,
 		logger,
+		historyBuilder,
 	)
 
 	router := server.NewRouter(bot, mgr, processor, cfg.SessionTTLDays, logger)

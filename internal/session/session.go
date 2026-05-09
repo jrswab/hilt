@@ -29,6 +29,13 @@ type Session struct {
 	TotalOutputTokens  int64
 }
 
+// TurnRow represents a single turn from the turns table.
+type TurnRow struct {
+	TurnNumber      int
+	UserMessage     string
+	NewMessagesJSON string
+}
+
 // Manager encapsulates all database access for session lifecycle operations.
 type Manager struct {
 	db *sql.DB
@@ -105,6 +112,35 @@ func (m *Manager) GetTurnCount(ctx context.Context, sessionID int64) (int, error
 		return 0, fmt.Errorf("counting turns: %w", err)
 	}
 	return count, nil
+}
+
+// GetTurns returns all turns for a session ordered by turn_number ascending.
+// Returns an empty (non-nil) slice when the session has zero turns.
+func (m *Manager) GetTurns(ctx context.Context, sessionID int64) ([]TurnRow, error) {
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT turn_number, user_message, new_messages_json FROM turns WHERE session_id = ? ORDER BY turn_number ASC`,
+		sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("querying turns: %w", err)
+	}
+	defer rows.Close()
+
+	var turns []TurnRow
+	for rows.Next() {
+		var t TurnRow
+		if err := rows.Scan(&t.TurnNumber, &t.UserMessage, &t.NewMessagesJSON); err != nil {
+			return nil, fmt.Errorf("scanning turn: %w", err)
+		}
+		turns = append(turns, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating turns: %w", err)
+	}
+
+	if turns == nil {
+		return []TurnRow{}, nil
+	}
+	return turns, nil
 }
 
 // RecordTurn inserts a turn row into the turns table.

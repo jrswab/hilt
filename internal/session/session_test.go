@@ -547,6 +547,50 @@ func TestSetSessionTitle(t *testing.T) {
 	})
 }
 
+func TestGetTurns(t *testing.T) {
+	m, cleanup := testManager(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	t.Run("returns empty slice for new session", func(t *testing.T) {
+		s, _ := m.CreateSession(ctx)
+		turns, err := m.GetTurns(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("GetTurns: %v", err)
+		}
+		if turns == nil {
+			t.Error("expected non-nil empty slice, got nil")
+		}
+		if len(turns) != 0 {
+			t.Errorf("expected 0 turns, got %d", len(turns))
+		}
+	})
+
+	t.Run("returns turns in chronological order", func(t *testing.T) {
+		s, _ := m.CreateSession(ctx)
+		if err := m.RecordTurn(ctx, s.ID, 1, "first", `[{"role":"assistant","content":"hi"}]`); err != nil {
+			t.Fatalf("RecordTurn: %v", err)
+		}
+		if err := m.RecordTurn(ctx, s.ID, 2, "second", `[{"role":"assistant","content":"ok"}]`); err != nil {
+			t.Fatalf("RecordTurn: %v", err)
+		}
+
+		turns, err := m.GetTurns(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("GetTurns: %v", err)
+		}
+		if len(turns) != 2 {
+			t.Fatalf("expected 2 turns, got %d", len(turns))
+		}
+		if turns[0].TurnNumber != 1 || turns[0].UserMessage != "first" {
+			t.Errorf("turn[0] = %+v, want turn 1", turns[0])
+		}
+		if turns[1].TurnNumber != 2 || turns[1].UserMessage != "second" {
+			t.Errorf("turn[1] = %+v, want turn 2", turns[1])
+		}
+	})
+}
+
 func TestCascadeDelete(t *testing.T) {
 	m, cleanup := testManager(t)
 	defer cleanup()
