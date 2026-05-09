@@ -57,7 +57,7 @@ func validate(c *Config) error {
 // It does not overwrite existing files. It returns a default Config.
 func createDefaults(configDir, workspaceDir string) (*Config, error) {
 	// Expand workspace dir
-	expandedWorkspace, err := expandPath(workspaceDir)
+	expandedWorkspace, err := ExpandPath(workspaceDir)
 	if err != nil {
 		return nil, fmt.Errorf("expanding workspace dir: %w", err)
 	}
@@ -158,7 +158,7 @@ func loadFromFile(path string) (*Config, error) {
 // postProcess expands workspace_dir, ensures it exists, resolves the bot token,
 // and validates the config. It mutates cfg in place.
 func postProcess(cfg *Config) error {
-	expandedWorkspace, err := expandPath(cfg.WorkspaceDir)
+	expandedWorkspace, err := ExpandPath(cfg.WorkspaceDir)
 	if err != nil {
 		return fmt.Errorf("expanding workspace_dir: %w", err)
 	}
@@ -194,7 +194,7 @@ func Load(path string) (*Config, error) {
 		path = filepath.Join(home, ".config", "hilt", "config.toml")
 	}
 
-	expandedPath, err := expandPath(path)
+	expandedPath, err := ExpandPath(path)
 	if err != nil {
 		return nil, fmt.Errorf("expanding config path: %w", err)
 	}
@@ -258,9 +258,9 @@ func resolveBotToken(tomlValue string) string {
 	return strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
 }
 
-// expandPath expands a leading tilde to the user's home directory.
+// ExpandPath expands a leading tilde to the user's home directory.
 // Absolute and relative paths are returned unchanged.
-func expandPath(path string) (string, error) {
+func ExpandPath(path string) (string, error) {
 	if !strings.HasPrefix(path, "~") {
 		return path, nil
 	}

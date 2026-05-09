@@ -88,7 +88,7 @@ All milestones are **tracer bullets** — vertical, end-to-end slices that prove
   - Validate required fields; fail fast with clear errors
   - Create `agents/main.toml` and `AGENTS.md` stubs if missing
 
-- [ ] **003: Database — SQLite schema and session lifecycle**
+- [x] **003: Database — SQLite schema and session lifecycle**
   - Initialize `hilt.sqlite` at `~/.config/hilt/`
   - Create `sessions` and `turns` tables (journal-style schema)
   - Load or create active session on startup

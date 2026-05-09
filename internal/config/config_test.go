@@ -549,10 +549,10 @@ func TestExpandPath(t *testing.T) {
 				defer os.Setenv("HOME", home)
 			}
 
-			got, err := expandPath(tt.input)
+			got, err := ExpandPath(tt.input)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatalf("expandPath(%q) expected error, got nil", tt.input)
+					t.Fatalf("ExpandPath(%q) expected error, got nil", tt.input)
 				}
 				if !strings.Contains(err.Error(), "HOME") {
 					t.Fatalf("expected error to mention HOME, got: %v", err)
@@ -560,10 +560,10 @@ func TestExpandPath(t *testing.T) {
 				return
 			}
 			if err != nil {
-				t.Fatalf("expandPath(%q) unexpected error: %v", tt.input, err)
+				t.Fatalf("ExpandPath(%q) unexpected error: %v", tt.input, err)
 			}
 			if got != tt.want {
-				t.Fatalf("expandPath(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Fatalf("ExpandPath(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
