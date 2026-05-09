@@ -56,9 +56,9 @@ func (f *fakeSessionManager) ListArchivedSessions(ctx context.Context, cutoff ti
 	return f.archivedSessions, f.archivedSessionsErr
 }
 
-func testRouter(fm *fakeMessenger, fs *fakeSessionManager) *Router {
+func testRouter(fm *fakeMessenger, fs *fakeSessionManager, processor TurnProcessor) *Router {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-	return NewRouter(fm, fs, 30, logger)
+	return NewRouter(fm, fs, processor, 30, logger)
 }
 
 func TestNewRouterPanicsOnNilDependencies(t *testing.T) {
@@ -70,7 +70,7 @@ func TestNewRouterPanicsOnNilDependencies(t *testing.T) {
 			}
 		}()
 		fs := &fakeSessionManager{}
-		_ = NewRouter(nil, fs, 7, logger)
+		_ = NewRouter(nil, fs, nil, 7, logger)
 	})
 	t.Run("nil sessions panics", func(t *testing.T) {
 		defer func() {
@@ -79,7 +79,7 @@ func TestNewRouterPanicsOnNilDependencies(t *testing.T) {
 			}
 		}()
 		fm := &fakeMessenger{}
-		_ = NewRouter(fm, nil, 7, logger)
+		_ = NewRouter(fm, nil, nil, 7, logger)
 	})
 }
 
@@ -90,7 +90,7 @@ func TestRouterCommandParsing(t *testing.T) {
 			activeSessionErr: internal.ErrNotFound,
 			newSession:       &session.Session{ID: 42},
 		}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 
 		_ = r.HandleMessage(context.Background(), 123, "  /new  ")
 
@@ -109,7 +109,7 @@ func TestRouterCommandParsing(t *testing.T) {
 				activeSessionErr: internal.ErrNotFound,
 				newSession:       &session.Session{ID: 99},
 			}
-			r := testRouter(fm, fs)
+			r := testRouter(fm, fs, nil)
 			_ = r.HandleMessage(context.Background(), 123, cmd)
 			if len(fm.messages) != 1 {
 				t.Errorf("cmd %q: expected 1 message, got %d", cmd, len(fm.messages))
@@ -121,7 +121,7 @@ func TestRouterCommandParsing(t *testing.T) {
 		for _, cmd := range []string{"/SESSIONS", "/Sessions", "/SeSsIoNs"} {
 			fm := &fakeMessenger{}
 			fs := &fakeSessionManager{archivedSessions: nil}
-			r := testRouter(fm, fs)
+			r := testRouter(fm, fs, nil)
 			_ = r.HandleMessage(context.Background(), 123, cmd)
 			if len(fm.messages) != 1 {
 				t.Errorf("cmd %q: expected 1 message, got %d", cmd, len(fm.messages))
@@ -135,7 +135,7 @@ func TestRouterCommandParsing(t *testing.T) {
 	t.Run("bare slash is unknown command", func(t *testing.T) {
 		fm := &fakeMessenger{}
 		fs := &fakeSessionManager{}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/")
 		if len(fm.messages) != 1 {
 			t.Fatalf("expected 1 message, got %d", len(fm.messages))
@@ -148,7 +148,7 @@ func TestRouterCommandParsing(t *testing.T) {
 	t.Run("slash with space is unknown command", func(t *testing.T) {
 		fm := &fakeMessenger{}
 		fs := &fakeSessionManager{}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/ unknown")
 		if len(fm.messages) != 1 {
 			t.Fatalf("expected 1 message, got %d", len(fm.messages))
@@ -161,7 +161,7 @@ func TestRouterCommandParsing(t *testing.T) {
 	t.Run("normal message routes to stub", func(t *testing.T) {
 		fm := &fakeMessenger{}
 		fs := &fakeSessionManager{}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "hello world")
 		if len(fm.messages) != 1 {
 			t.Fatalf("expected 1 message, got %d", len(fm.messages))
@@ -174,7 +174,7 @@ func TestRouterCommandParsing(t *testing.T) {
 	t.Run("whitespace-only is normal message", func(t *testing.T) {
 		fm := &fakeMessenger{}
 		fs := &fakeSessionManager{}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "   ")
 		if len(fm.messages) != 1 {
 			t.Fatalf("expected 1 message, got %d", len(fm.messages))
@@ -187,7 +187,7 @@ func TestRouterCommandParsing(t *testing.T) {
 	t.Run("unknown command", func(t *testing.T) {
 		fm := &fakeMessenger{}
 		fs := &fakeSessionManager{}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/unknowncmd")
 		if len(fm.messages) != 1 {
 			t.Fatalf("expected 1 message, got %d", len(fm.messages))
@@ -216,7 +216,7 @@ func TestRouterHandleNew(t *testing.T) {
 		// Simpler: just check outcomes.
 		// Since fakeSessionManager returns canned values, after HandleMessage we can
 		// verify the new session ID in the message.
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/new")
 
 		if len(fm.messages) != 1 {
@@ -235,7 +235,7 @@ func TestRouterHandleNew(t *testing.T) {
 			activeSessionErr: internal.ErrNotFound,
 			newSession:       &session.Session{ID: 7},
 		}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/new")
 
 		if len(fm.messages) != 1 {
@@ -253,7 +253,7 @@ func TestRouterHandleNew(t *testing.T) {
 			archiveErr:       internal.ErrNotFound,
 			newSession:       &session.Session{ID: 9},
 		}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/new")
 
 		if len(fm.messages) != 1 {
@@ -271,7 +271,7 @@ func TestRouterHandleNew(t *testing.T) {
 			archiveErr:    errors.New("disk full"),
 			newSession:    &session.Session{ID: 10},
 		}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/new")
 
 		if len(fm.messages) != 1 {
@@ -288,7 +288,7 @@ func TestRouterHandleNew(t *testing.T) {
 			activeSessionErr: internal.ErrNotFound,
 			newSessionErr:    errors.New("db locked"),
 		}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/new")
 
 		if len(fm.messages) != 1 {
@@ -304,7 +304,7 @@ func TestRouterHandleSessions(t *testing.T) {
 	t.Run("empty archived list", func(t *testing.T) {
 		fm := &fakeMessenger{}
 		fs := &fakeSessionManager{archivedSessions: nil}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/sessions")
 
 		if len(fm.messages) != 1 {
@@ -324,7 +324,7 @@ func TestRouterHandleSessions(t *testing.T) {
 				{ID: 1, Title: nil, CreatedAt: created, ArchivedAt: &archived},
 			},
 		}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/sessions")
 
 		if len(fm.messages) != 1 {
@@ -345,7 +345,7 @@ func TestRouterHandleSessions(t *testing.T) {
 				{ID: 1, Title: &emptyTitle, CreatedAt: created, ArchivedAt: &archived},
 			},
 		}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/sessions")
 
 		if !strings.Contains(fm.messages[0].text, "Untitled") {
@@ -366,7 +366,7 @@ func TestRouterHandleSessions(t *testing.T) {
 				{ID: 3, Title: &title2, CreatedAt: created, ArchivedAt: &archived2},
 			},
 		}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/sessions")
 
 		if len(fm.messages) != 1 {
@@ -386,7 +386,7 @@ func TestRouterHandleSessions(t *testing.T) {
 		fs := &fakeSessionManager{
 			archivedSessionsErr: errors.New("db timeout"),
 		}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		_ = r.HandleMessage(context.Background(), 123, "/sessions")
 
 		if len(fm.messages) != 1 {
@@ -402,7 +402,7 @@ func TestRouterEdgeCases(t *testing.T) {
 	t.Run("messenger error is logged not propagated", func(t *testing.T) {
 		fm := &fakeMessenger{err: errors.New("network down")}
 		fs := &fakeSessionManager{}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		err := r.HandleMessage(context.Background(), 123, "hello")
 		if err != nil {
 			t.Fatalf("HandleMessage should return nil even if messenger fails, got %v", err)
@@ -415,7 +415,7 @@ func TestRouterEdgeCases(t *testing.T) {
 			activeSessionErr: internal.ErrNotFound,
 			newSessionErr:    errors.New("create fails"),
 		}
-		r := testRouter(fm, fs)
+		r := testRouter(fm, fs, nil)
 		// /new path: get active fails, create fails, send fails — all swallowed.
 		err := r.HandleMessage(context.Background(), 123, "/new")
 		if err != nil {

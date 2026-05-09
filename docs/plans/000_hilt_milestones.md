@@ -111,7 +111,7 @@ All milestones are **tracer bullets** — vertical, end-to-end slices that prove
   - Normal message → main agent pipeline
   - Unknown command → "Command not found. Use /skills to see available commands." (hardcoded for MVP)
 
-- [ ] **006: Turn 1 — Context assembly for first message in a session**
+- [x] **006: Turn 1 — Context assembly for first message in a session**
   - Assemble hierarchical Markdown context:
     - `## Workspace Context` → AGENTS.md content
     - `### Critical State` → `memory/critical.md`

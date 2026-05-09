@@ -25,17 +25,24 @@ type SessionManager interface {
 	ListArchivedSessions(ctx context.Context, cutoff time.Time) ([]session.Session, error)
 }
 
+// TurnProcessor handles normal (non-command) messages.
+type TurnProcessor interface {
+	ProcessTurn(ctx context.Context, chatID int64, text string) error
+}
+
 // Router holds dependencies for dispatching incoming messages.
 type Router struct {
 	messenger Messenger
 	sessions  SessionManager
+	processor TurnProcessor
 	ttlDays   int
 	logger    *slog.Logger
 }
 
 // NewRouter creates a Router. Both messenger and sessions must be non-nil;
-// otherwise it panics with a clear message.
-func NewRouter(messenger Messenger, sessions SessionManager, ttlDays int, logger *slog.Logger) *Router {
+// otherwise it panics with a clear message. processor may be nil for
+// backward compatibility.
+func NewRouter(messenger Messenger, sessions SessionManager, processor TurnProcessor, ttlDays int, logger *slog.Logger) *Router {
 	if messenger == nil {
 		panic("messenger must not be nil")
 	}
@@ -48,6 +55,7 @@ func NewRouter(messenger Messenger, sessions SessionManager, ttlDays int, logger
 	return &Router{
 		messenger: messenger,
 		sessions:  sessions,
+		processor: processor,
 		ttlDays:   ttlDays,
 		logger:    logger,
 	}
@@ -142,5 +150,12 @@ func (r *Router) sendUnknownCommand(ctx context.Context, chatID int64) {
 }
 
 func (r *Router) handleNormalMessage(ctx context.Context, chatID int64, text string) {
+	if r.processor != nil {
+		if err := r.processor.ProcessTurn(ctx, chatID, text); err != nil {
+			r.logger.Error("process turn failed", slog.Any("error", err))
+			_ = r.messenger.SendMessage(ctx, chatID, "Something went wrong processing your message.")
+		}
+		return
+	}
 	_ = r.messenger.SendMessage(ctx, chatID, "Message received. The main agent is not yet online.")
 }

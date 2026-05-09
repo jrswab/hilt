@@ -1,0 +1,550 @@
+package mainagent
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/jrswab/axe/pkg/runner"
+	"github.com/jrswab/hilt/internal/memory"
+	"github.com/jrswab/hilt/internal/session"
+)
+
+// --- Shared test fakes ---
+
+type fakeRunner struct {
+	result *runner.Result
+	err    error
+}
+
+func (f *fakeRunner) Run(_ context.Context, _ runner.Options) (*runner.Result, error) {
+	return f.result, f.err
+}
+
+type fakeMessenger struct {
+	lastChatID int64
+	lastText   string
+	err        error
+}
+
+func (f *fakeMessenger) SendMessage(_ context.Context, chatID int64, text string) error {
+	f.lastChatID = chatID
+	f.lastText = text
+	return f.err
+}
+
+// fakeSessions implements ActiveSessionProvider
+type fakeSessions struct {
+	session       *session.Session
+	getErr        error
+	activityErr   error
+	activityCalled bool
+}
+
+func (f *fakeSessions) GetActiveSession(_ context.Context) (*session.Session, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if f.session == nil {
+		f.session = &session.Session{ID: 1}
+	}
+	return f.session, nil
+}
+
+func (f *fakeSessions) UpdateSessionActivity(_ context.Context) error {
+	f.activityCalled = true
+	return f.activityErr
+}
+
+// fakeTurns implements TurnStore
+type fakeTurns struct {
+	count        int
+	countErr     error
+	recorded     map[string]interface{}
+	recordErr    error
+}
+
+func newFakeTurns() *fakeTurns {
+	return &fakeTurns{recorded: make(map[string]interface{})}
+}
+
+func (f *fakeTurns) GetTurnCount(_ context.Context, _ int64) (int, error) {
+	return f.count, f.countErr
+}
+
+func (f *fakeTurns) RecordTurn(_ context.Context, sessionID int64, turnNum int, userMessage string, newMessagesJSON string) error {
+	if f.recordErr != nil {
+		return f.recordErr
+	}
+	f.recorded["sessionID"] = sessionID
+	f.recorded["turnNum"] = turnNum
+	f.recorded["userMessage"] = userMessage
+	f.recorded["newMessagesJSON"] = newMessagesJSON
+	return nil
+}
+
+// fakeStore implements SessionStore
+type fakeStore struct {
+	tokens    map[string]int64
+	titles    map[int64]string
+	tokenErr  error
+	titleErr  error
+}
+
+func newFakeStore() *fakeStore {
+	return &fakeStore{
+		tokens: make(map[string]int64),
+		titles: make(map[int64]string),
+	}
+}
+
+func (f *fakeStore) UpdateSessionTokens(_ context.Context, _ int64, inputTokens, outputTokens int64) error {
+	if f.tokenErr != nil {
+		return f.tokenErr
+	}
+	f.tokens["input"] = inputTokens
+	f.tokens["output"] = outputTokens
+	return nil
+}
+
+func (f *fakeStore) SetSessionTitle(_ context.Context, sessionID int64, title string) error {
+	if f.titleErr != nil {
+		return f.titleErr
+	}
+	f.titles[sessionID] = title
+	return nil
+}
+
+// --- Context assembly tests ---
+
+func TestAssembleContextAllSections(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+
+	os.WriteFile(filepath.Join(workspace, "AGENTS.md"), []byte("# Agent Rules\n\nBe helpful."), 0644)
+	os.MkdirAll(filepath.Join(workspace, "memory"), 0755)
+	os.WriteFile(filepath.Join(workspace, "memory", "critical.md"), []byte("## Critical State\n\n- Active project: hilt"), 0644)
+
+	today := time.Now().UTC().Format("2006-01-02")
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	os.WriteFile(filepath.Join(workspace, "memory", today+".md"), []byte("# "+today+"\n\nMet with team."), 0644)
+	os.WriteFile(filepath.Join(workspace, "memory", yesterday+".md"), []byte("# "+yesterday+"\n\nReviewed PRs."), 0644)
+
+	result, err := assembleContext(reader, "  Build me a feature  ")
+	if err != nil {
+		t.Fatalf("assembleContext: %v", err)
+	}
+
+	if !strings.Contains(result, "## Workspace Context") {
+		t.Error("missing ## Workspace Context")
+	}
+	if !strings.Contains(result, "### Rules (AGENTS.md)") {
+		t.Error("missing ### Rules (AGENTS.md)")
+	}
+	if !strings.Contains(result, "### Critical State") {
+		t.Error("missing ### Critical State")
+	}
+	if !strings.Contains(result, "## Recent Memory") {
+		t.Error("missing ## Recent Memory")
+	}
+	if !strings.Contains(result, "### Note: "+today) {
+		t.Errorf("missing ### Note: %s", today)
+	}
+	if !strings.Contains(result, "### Note: "+yesterday) {
+		t.Errorf("missing ### Note: %s", yesterday)
+	}
+	if !strings.Contains(result, "## Current Task") {
+		t.Error("missing ## Current Task")
+	}
+	if !strings.HasSuffix(result, "Build me a feature") {
+		t.Errorf("expected to end with trimmed user message, got:\n%s", result)
+	}
+
+	idxWorkspace := strings.Index(result, "## Workspace Context")
+	idxRecent := strings.Index(result, "## Recent Memory")
+	idxTask := strings.Index(result, "## Current Task")
+	if idxWorkspace >= idxRecent || idxRecent >= idxTask {
+		t.Error("sections are not in correct order")
+	}
+}
+
+func TestAssembleContextMissingFilesPresentHeaders(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+
+	result, err := assembleContext(reader, "Do something")
+	if err != nil {
+		t.Fatalf("assembleContext: %v", err)
+	}
+
+	if !strings.Contains(result, "### Rules (AGENTS.md)") {
+		t.Error("missing Rules header even when AGENTS.md is missing")
+	}
+	if !strings.Contains(result, "### Critical State") {
+		t.Error("missing Critical State header even when critical.md is missing")
+	}
+}
+
+func TestAssembleContextNoYesterdayNote(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+
+	today := time.Now().UTC().Format("2006-01-02")
+	yesterday := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+
+	os.MkdirAll(filepath.Join(workspace, "memory"), 0755)
+	os.WriteFile(filepath.Join(workspace, "memory", today+".md"), []byte("# "+today+"\n\nDaily entry."), 0644)
+
+	result, err := assembleContext(reader, "Task")
+	if err != nil {
+		t.Fatalf("assembleContext: %v", err)
+	}
+
+	if !strings.Contains(result, "### Note: "+today) {
+		t.Errorf("missing today note")
+	}
+	if strings.Contains(result, "### Note: "+yesterday) {
+		t.Errorf("yesterday note should be omitted when file is missing")
+	}
+}
+
+func TestAssembleContextCreatesSkeleton(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+
+	today := time.Now().UTC().Format("2006-01-02")
+
+	result, err := assembleContext(reader, "New task")
+	if err != nil {
+		t.Fatalf("assembleContext: %v", err)
+	}
+
+	path := filepath.Join(workspace, "memory", today+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("skeleton not created: %v", err)
+	}
+	if !strings.Contains(string(data), "# "+today) {
+		t.Errorf("skeleton missing heading, got:\n%s", string(data))
+	}
+
+	if !strings.Contains(result, "## Wing: Work") {
+		t.Error("assembled context missing skeleton content")
+	}
+}
+
+func TestAssembleContextWhitespaceTrim(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+
+	result, err := assembleContext(reader, "  \n  some task  \n  ")
+	if err != nil {
+		t.Fatalf("assembleContext: %v", err)
+	}
+
+	if !strings.HasSuffix(result, "some task") {
+		t.Errorf("expected trimmed user message, got suffix:\n%s", result[len(result)-50:])
+	}
+}
+
+// --- truncateTitle tests ---
+
+func TestTruncateTitle(t *testing.T) {
+	t.Run("truncates ASCII over limit", func(t *testing.T) {
+		input := strings.Repeat("a", 50)
+		got := truncateTitle(input, 40)
+		if len(got) != 40 {
+			t.Errorf("len=%d, want 40", len(got))
+		}
+	})
+
+	t.Run("keeps short string unchanged", func(t *testing.T) {
+		input := "short title"
+		got := truncateTitle(input, 40)
+		if got != input {
+			t.Errorf("got %q, want %q", got, input)
+		}
+	})
+
+	t.Run("truncate at exactly 40 runes with multi-byte", func(t *testing.T) {
+		input := strings.Repeat("🔥", 50)
+		got := truncateTitle(input, 40)
+		if utf8.RuneCountInString(got) != 40 {
+			t.Errorf("rune count = %d, want 40", utf8.RuneCountInString(got))
+		}
+	})
+}
+
+// --- ProcessTurn tests ---
+
+func TestProcessTurnSuccess(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	runner := &fakeRunner{
+		result: &runner.Result{
+			Content:      "Hello from the LLM",
+			InputTokens:  100,
+			OutputTokens: 50,
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "  Hello LLM  ")
+	if err != nil {
+		t.Fatalf("ProcessTurn: %v", err)
+	}
+
+	if messenger.lastChatID != 12345 {
+		t.Errorf("chatID = %d, want 12345", messenger.lastChatID)
+	}
+	if messenger.lastText != "Hello from the LLM" {
+		t.Errorf("text = %q, want \"Hello from the LLM\"", messenger.lastText)
+	}
+
+	if turns.recorded["sessionID"] != int64(1) {
+		t.Errorf("sessionID = %v, want 1", turns.recorded["sessionID"])
+	}
+	if turns.recorded["turnNum"] != 1 {
+		t.Errorf("turnNum = %v, want 1", turns.recorded["turnNum"])
+	}
+	if turns.recorded["userMessage"] != "Hello LLM" {
+		t.Errorf("userMessage = %v, want \"Hello LLM\"", turns.recorded["userMessage"])
+	}
+
+	if store.tokens["input"] != 100 {
+		t.Errorf("input tokens = %d, want 100", store.tokens["input"])
+	}
+	if store.tokens["output"] != 50 {
+		t.Errorf("output tokens = %d, want 50", store.tokens["output"])
+	}
+
+	if store.titles[1] != "Hello LLM" {
+		t.Errorf("title = %q, want \"Hello LLM\"", store.titles[1])
+	}
+
+	if !sessions.activityCalled {
+		t.Error("UpdateSessionActivity was not called")
+	}
+
+	// Verify delta JSON contains assistant message
+	deltaJSON := turns.recorded["newMessagesJSON"].(string)
+	if !strings.Contains(deltaJSON, `"role":"assistant"`) {
+		t.Errorf("delta JSON missing assistant role: %s", deltaJSON)
+	}
+	if !strings.Contains(deltaJSON, "Hello from the LLM") {
+		t.Errorf("delta JSON missing content: %s", deltaJSON)
+	}
+}
+
+func TestProcessTurnRunnerError(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	runner := &fakeRunner{err: fmt.Errorf("API rate limit")}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Hello")
+	if err != nil {
+		t.Fatalf("ProcessTurn returned error: %v", err)
+	}
+
+	if !strings.Contains(messenger.lastText, "I couldn't process that request") {
+		t.Errorf("expected fallback message, got %q", messenger.lastText)
+	}
+	if !strings.Contains(messenger.lastText, "API rate limit") {
+		t.Errorf("expected error details in message, got %q", messenger.lastText)
+	}
+
+	// No turn should be recorded on failure
+	if len(turns.recorded) > 0 {
+		t.Error("no turn should be recorded when runner fails")
+	}
+}
+
+func TestProcessTurnNilResult(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	runner := &fakeRunner{result: nil}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Hello")
+	if err != nil {
+		t.Fatalf("ProcessTurn returned error: %v", err)
+	}
+
+	if !strings.Contains(messenger.lastText, "unexpected empty result") {
+		t.Errorf("expected nil result message, got %q", messenger.lastText)
+	}
+}
+
+func TestProcessTurnTurn2Plus(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	turns.count = 1
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	runner := &fakeRunner{result: &runner.Result{Content: "ok"}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Hello again")
+	if err != nil {
+		t.Fatalf("ProcessTurn returned error: %v", err)
+	}
+
+	if !strings.Contains(messenger.lastText, "not yet online for turn 2+") {
+		t.Errorf("expected turn 2+ message, got %q", messenger.lastText)
+	}
+}
+
+func TestProcessTurnRecordTurnErrorStillSendsReply(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	turns.recordErr = fmt.Errorf("disk full")
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	runner := &fakeRunner{result: &runner.Result{Content: "Reply content", InputTokens: 10, OutputTokens: 5}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Hello")
+	if err != nil {
+		t.Fatalf("ProcessTurn returned error: %v", err)
+	}
+
+	if messenger.lastText != "Reply content" {
+		t.Errorf("expected reply even after DB failure, got %q", messenger.lastText)
+	}
+}
+
+func TestProcessTurnMessengerErrorPropagates(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	store := newFakeStore()
+	messenger := &fakeMessenger{err: fmt.Errorf("network down")}
+	runner := &fakeRunner{result: &runner.Result{Content: "Reply", InputTokens: 10, OutputTokens: 5}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Hello")
+	if err == nil {
+		t.Fatal("expected Telegram dispatch error to propagate")
+	}
+}
+
+func TestProcessTurnSessionTokensErrorStillSendsReply(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	store := newFakeStore()
+	store.tokenErr = fmt.Errorf("db locked")
+	messenger := &fakeMessenger{}
+	runner := &fakeRunner{result: &runner.Result{Content: "LLM says hi", InputTokens: 5, OutputTokens: 5}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Hello")
+	if err != nil {
+		t.Fatalf("ProcessTurn returned error: %v", err)
+	}
+
+	if messenger.lastText != "LLM says hi" {
+		t.Errorf("expected reply even when token update fails, got %q", messenger.lastText)
+	}
+}
+
+func TestProcessTurnNoTitleWhenAlreadySet(t *testing.T) {
+	title := "Existing Title"
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{session: &session.Session{ID: 1, Title: &title}}
+	turns := newFakeTurns()
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	runner := &fakeRunner{result: &runner.Result{Content: "ok", InputTokens: 1, OutputTokens: 1}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger)
+
+	ctx := context.Background()
+	p.ProcessTurn(ctx, 1, "Message 1")
+
+	if _, ok := store.titles[1]; ok {
+		t.Error("title should not be updated when session already has a title")
+	}
+}
+
+func TestNewProcessorPanicsOnNil(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	fs := &fakeSessions{}
+	ft := newFakeTurns()
+	fst := newFakeStore()
+	fr := &fakeRunner{}
+	fm := &fakeMessenger{}
+	reader := memory.NewReader(t.TempDir())
+
+	tests := []struct {
+		name string
+		fn   func()
+	}{
+		{"sessions nil", func() { NewProcessor(nil, ft, fst, reader, fr, fm, "", "", logger) }},
+		{"turns nil", func() { NewProcessor(fs, nil, fst, reader, fr, fm, "", "", logger) }},
+		{"store nil", func() { NewProcessor(fs, ft, nil, reader, fr, fm, "", "", logger) }},
+		{"reader nil", func() { NewProcessor(fs, ft, fst, nil, fr, fm, "", "", logger) }},
+		{"runner nil", func() { NewProcessor(fs, ft, fst, reader, nil, fm, "", "", logger) }},
+		{"messenger nil", func() { NewProcessor(fs, ft, fst, reader, fr, nil, "", "", logger) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("expected panic for %s", tt.name)
+				}
+			}()
+			tt.fn()
+		})
+	}
+}

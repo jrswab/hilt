@@ -96,6 +96,46 @@ func NewManager(dbPath string) (*Manager, error) {
 	return &Manager{db: db}, nil
 }
 
+// GetTurnCount returns the number of turns for the given session.
+func (m *Manager) GetTurnCount(ctx context.Context, sessionID int64) (int, error) {
+	var count int
+	err := m.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM turns WHERE session_id = ?`, sessionID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting turns: %w", err)
+	}
+	return count, nil
+}
+
+// RecordTurn inserts a turn row into the turns table.
+func (m *Manager) RecordTurn(ctx context.Context, sessionID int64, turnNum int, userMessage string, newMessagesJSON string) error {
+	_, err := m.db.ExecContext(ctx,
+		`INSERT INTO turns (session_id, turn_number, user_message, new_messages_json) VALUES (?, ?, ?, ?)`,
+		sessionID, turnNum, userMessage, newMessagesJSON)
+	if err != nil {
+		return fmt.Errorf("inserting turn: %w", err)
+	}
+	return nil
+}
+
+// SetSessionTitle updates the title for the given session.
+// Returns ErrNotFound if the session does not exist.
+func (m *Manager) SetSessionTitle(ctx context.Context, sessionID int64, title string) error {
+	res, err := m.db.ExecContext(ctx,
+		`UPDATE sessions SET title = ? WHERE id = ?`, title, sessionID)
+	if err != nil {
+		return fmt.Errorf("updating session title: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("getting rows affected: %w", err)
+	}
+	if n == 0 {
+		return internal.ErrNotFound
+	}
+	return nil
+}
+
 // Close closes the underlying database connection.
 func (m *Manager) Close() error {
 	return m.db.Close()

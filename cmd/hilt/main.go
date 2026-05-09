@@ -12,13 +12,23 @@ import (
 
 	"log/slog"
 
+	"github.com/jrswab/axe/pkg/runner"
 	"github.com/jrswab/hilt/internal/config"
+	"github.com/jrswab/hilt/internal/mainagent"
+	"github.com/jrswab/hilt/internal/memory"
 	"github.com/jrswab/hilt/internal/server"
 	"github.com/jrswab/hilt/internal/session"
 	"github.com/jrswab/hilt/internal/telegram"
 )
 
 const version = "0.1.0"
+
+// axeRunner wraps runner.Run to satisfy the mainagent.Runner interface.
+type axeRunner struct{}
+
+func (a *axeRunner) Run(ctx context.Context, opts runner.Options) (*runner.Result, error) {
+	return runner.Run(ctx, opts)
+}
 
 // resolveLogLevel maps a string to a slog.Level. Unknown values fall back to info.
 func resolveLogLevel(input string) slog.Level {
@@ -144,7 +154,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	router := server.NewRouter(bot, mgr, cfg.SessionTTLDays, logger)
+	memoryReader := memory.NewReader(cfg.WorkspaceDir)
+	agentsDir := filepath.Join(dbDir, "agents")
+	processor := mainagent.NewProcessor(
+		mgr,           // ActiveSessionProvider
+		mgr,           // TurnStore
+		mgr,           // SessionStore
+		memoryReader,  // FileReader
+		&axeRunner{},  // Runner
+		bot,           // Messenger
+		agentsDir,
+		cfg.MainAgentModel,
+		logger,
+	)
+
+	router := server.NewRouter(bot, mgr, processor, cfg.SessionTTLDays, logger)
 
 	logger.Info("hilt ready", slog.Int64("active_session_id", activeSession.ID))
 	logger.Info("starting telegram polling")

@@ -456,6 +456,97 @@ func TestListArchivedSessions(t *testing.T) {
 	})
 }
 
+func TestGetTurnCount(t *testing.T) {
+	m, cleanup := testManager(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	t.Run("returns 0 for new session", func(t *testing.T) {
+		s, _ := m.CreateSession(ctx)
+		count, err := m.GetTurnCount(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("GetTurnCount: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("expected 0, got %d", count)
+		}
+	})
+
+	t.Run("increments after recording turns", func(t *testing.T) {
+		s, _ := m.CreateSession(ctx)
+		if err := m.RecordTurn(ctx, s.ID, 1, "hello", "[]"); err != nil {
+			t.Fatalf("RecordTurn: %v", err)
+		}
+		count, err := m.GetTurnCount(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("GetTurnCount: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("expected 1, got %d", count)
+		}
+	})
+}
+
+func TestRecordTurn(t *testing.T) {
+	m, cleanup := testManager(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	s, _ := m.CreateSession(ctx)
+	if err := m.RecordTurn(ctx, s.ID, 1, "hello", `[{"role":"assistant"}]`); err != nil {
+		t.Fatalf("RecordTurn: %v", err)
+	}
+
+	var sessionID int64
+	var turnNum int
+	var userMsg, jsonStr string
+	err := m.db.QueryRowContext(ctx,
+		`SELECT session_id, turn_number, user_message, new_messages_json FROM turns WHERE session_id = ?`,
+		s.ID).Scan(&sessionID, &turnNum, &userMsg, &jsonStr)
+	if err != nil {
+		t.Fatalf("querying turn: %v", err)
+	}
+	if sessionID != s.ID {
+		t.Errorf("session_id = %d, want %d", sessionID, s.ID)
+	}
+	if turnNum != 1 {
+		t.Errorf("turn_number = %d, want 1", turnNum)
+	}
+	if userMsg != "hello" {
+		t.Errorf("user_message = %q, want \"hello\"", userMsg)
+	}
+	if jsonStr != `[{"role":"assistant"}]` {
+		t.Errorf("new_messages_json = %q", jsonStr)
+	}
+}
+
+func TestSetSessionTitle(t *testing.T) {
+	m, cleanup := testManager(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	t.Run("updates existing session title", func(t *testing.T) {
+		s, _ := m.CreateSession(ctx)
+		if err := m.SetSessionTitle(ctx, s.ID, "Test Title"); err != nil {
+			t.Fatalf("SetSessionTitle: %v", err)
+		}
+		reloaded, err := m.sessionByID(ctx, s.ID)
+		if err != nil {
+			t.Fatalf("sessionByID: %v", err)
+		}
+		if reloaded.Title == nil || *reloaded.Title != "Test Title" {
+			t.Errorf("title = %v, want \"Test Title\"", reloaded.Title)
+		}
+	})
+
+	t.Run("returns ErrNotFound for non-existent session", func(t *testing.T) {
+		err := m.SetSessionTitle(ctx, 99999, "No Session")
+		if !internal.IsNotFound(err) {
+			t.Errorf("expected ErrNotFound, got %v", err)
+		}
+	})
+}
+
 func TestCascadeDelete(t *testing.T) {
 	m, cleanup := testManager(t)
 	defer cleanup()
