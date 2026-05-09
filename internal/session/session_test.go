@@ -374,6 +374,88 @@ func TestUpdateSessionTokens(t *testing.T) {
 	})
 }
 
+func TestListArchivedSessions(t *testing.T) {
+	t.Run("no archived sessions returns nil", func(t *testing.T) {
+		m, cleanup := testManager(t)
+		defer cleanup()
+		ctx := context.Background()
+
+		sessions, err := m.ListArchivedSessions(ctx, time.Now().AddDate(0, 0, -7))
+		if err != nil {
+			t.Fatalf("ListArchivedSessions: %v", err)
+		}
+		if sessions != nil {
+			t.Errorf("expected nil, got %v", sessions)
+		}
+	})
+
+	t.Run("filters outside TTL", func(t *testing.T) {
+		m, cleanup := testManager(t)
+		defer cleanup()
+		ctx := context.Background()
+
+		s1, _ := m.CreateSession(ctx)
+		s2, _ := m.CreateSession(ctx)
+		_ = m.ArchiveSession(ctx, s1.ID)
+		_ = m.ArchiveSession(ctx, s2.ID)
+
+		_, err := m.db.ExecContext(ctx,
+			`UPDATE sessions SET archived_at = datetime('now', '-60 days') WHERE id = ?`, s1.ID)
+		if err != nil {
+			t.Fatalf("setting old archived_at: %v", err)
+		}
+
+		cutoff := time.Now().AddDate(0, 0, -30)
+		sessions, err := m.ListArchivedSessions(ctx, cutoff)
+		if err != nil {
+			t.Fatalf("ListArchivedSessions: %v", err)
+		}
+		if len(sessions) != 1 {
+			t.Fatalf("expected 1 session, got %d", len(sessions))
+		}
+		if sessions[0].ID != s2.ID {
+			t.Errorf("expected s2 (id=%d), got id=%d", s2.ID, sessions[0].ID)
+		}
+	})
+
+	t.Run("orders most-recent-first", func(t *testing.T) {
+		m, cleanup := testManager(t)
+		defer cleanup()
+		ctx := context.Background()
+
+		s1, _ := m.CreateSession(ctx)
+		s2, _ := m.CreateSession(ctx)
+		_ = m.ArchiveSession(ctx, s1.ID)
+		_ = m.ArchiveSession(ctx, s2.ID)
+
+		_, err := m.db.ExecContext(ctx,
+			`UPDATE sessions SET archived_at = datetime('now', '-5 days') WHERE id = ?`, s1.ID)
+		if err != nil {
+			t.Fatalf("setting s1 archived_at: %v", err)
+		}
+		_, err = m.db.ExecContext(ctx,
+			`UPDATE sessions SET archived_at = datetime('now', '-1 days') WHERE id = ?`, s2.ID)
+		if err != nil {
+			t.Fatalf("setting s2 archived_at: %v", err)
+		}
+
+		cutoff := time.Now().AddDate(0, 0, -7)
+		sessions, err := m.ListArchivedSessions(ctx, cutoff)
+		if err != nil {
+			t.Fatalf("ListArchivedSessions: %v", err)
+		}
+		if len(sessions) != 2 {
+			t.Fatalf("expected 2 sessions, got %d", len(sessions))
+		}
+		if sessions[0].ID != s2.ID {
+			t.Errorf("expected most recent s2 first, got id=%d", sessions[0].ID)
+		}
+		if sessions[1].ID != s1.ID {
+			t.Errorf("expected older s1 second, got id=%d", sessions[1].ID)
+		}
+	})
+}
+
 func TestCascadeDelete(t *testing.T) {
 	m, cleanup := testManager(t)
 	defer cleanup()

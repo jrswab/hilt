@@ -104,7 +104,7 @@ All milestones are **tracer bullets** — vertical, end-to-end slices that prove
   - Implement `SendMessage` wrapper
   - Graceful shutdown on SIGINT/SIGTERM
 
-- [ ] **005: Routing — Built-in commands and main agent dispatch**
+- [x] **005: Routing — Built-in commands and main agent dispatch**
   - Parse incoming text: `/command` vs. normal message
   - Built-in `/new`: archive current session, create fresh empty session
   - Built-in `/sessions`: list archived sessions within TTL window

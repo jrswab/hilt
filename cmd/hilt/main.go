@@ -13,6 +13,7 @@ import (
 	"log/slog"
 
 	"github.com/jrswab/hilt/internal/config"
+	"github.com/jrswab/hilt/internal/server"
 	"github.com/jrswab/hilt/internal/session"
 	"github.com/jrswab/hilt/internal/telegram"
 )
@@ -143,18 +144,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	messageHandler := func(_ context.Context, chatID int64, text string) error {
-		logger.Info("received message",
-			slog.Int64("chat_id", chatID),
-			slog.String("text", text),
-		)
-		return nil
-	}
+	router := server.NewRouter(bot, mgr, cfg.SessionTTLDays, logger)
 
 	logger.Info("hilt ready", slog.Int64("active_session_id", activeSession.ID))
 	logger.Info("starting telegram polling")
 
-	if err := bot.Start(ctx, messageHandler); err != nil {
+	if err := bot.Start(ctx, router.HandleMessage); err != nil {
 		logger.Error("telegram polling error", slog.String("error", err.Error()))
 	}
 	logger.Info("shutting down")

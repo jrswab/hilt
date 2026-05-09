@@ -178,6 +178,49 @@ func (m *Manager) ArchiveSession(ctx context.Context, id int64) error {
 	return nil
 }
 
+// ListArchivedSessions returns archived sessions whose archived_at is >= cutoff,
+// ordered most-recent-first. Returns nil (not empty slice) when there are no results.
+func (m *Manager) ListArchivedSessions(ctx context.Context, cutoff time.Time) ([]Session, error) {
+	cutoffStr := cutoff.UTC().Format("2006-01-02 15:04:05")
+	rows, err := m.db.QueryContext(ctx,
+		`SELECT id, title, created_at, last_activity, archived_at, total_input_tokens, total_output_tokens
+		 FROM sessions
+		 WHERE archived_at IS NOT NULL AND archived_at >= ?
+		 ORDER BY archived_at DESC`, cutoffStr)
+	if err != nil {
+		return nil, fmt.Errorf("querying archived sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var sessions []Session
+	for rows.Next() {
+		var s Session
+		var title sql.NullString
+		var archivedAt sql.NullTime
+		if err := rows.Scan(
+			&s.ID, &title, &s.CreatedAt, &s.LastActivity, &archivedAt,
+			&s.TotalInputTokens, &s.TotalOutputTokens,
+		); err != nil {
+			return nil, fmt.Errorf("scanning archived session: %w", err)
+		}
+		if title.Valid {
+			s.Title = &title.String
+		}
+		if archivedAt.Valid {
+			s.ArchivedAt = &archivedAt.Time
+		}
+		sessions = append(sessions, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating archived sessions: %w", err)
+	}
+
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+	return sessions, nil
+}
+
 // PruneOldSessions deletes archived sessions older than the given cutoff.
 // It returns the number of sessions deleted.
 func (m *Manager) PruneOldSessions(ctx context.Context, cutoff time.Time) (int64, error) {
