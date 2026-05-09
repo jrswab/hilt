@@ -14,6 +14,7 @@ import (
 
 	"github.com/jrswab/hilt/internal/config"
 	"github.com/jrswab/hilt/internal/session"
+	"github.com/jrswab/hilt/internal/telegram"
 )
 
 const version = "0.1.0"
@@ -136,9 +137,25 @@ func main() {
 	}
 	defer mgr.Close()
 
-	logger.Info("hilt ready", slog.Int64("active_session_id", activeSession.ID))
-	logger.Info("waiting for signals...")
+	bot, err := telegram.NewBot(cfg.TelegramBotToken, cfg.AllowedUserIDs)
+	if err != nil {
+		logger.Error("failed to initialize telegram bot", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
 
-	<-ctx.Done()
+	messageHandler := func(_ context.Context, chatID int64, text string) error {
+		logger.Info("received message",
+			slog.Int64("chat_id", chatID),
+			slog.String("text", text),
+		)
+		return nil
+	}
+
+	logger.Info("hilt ready", slog.Int64("active_session_id", activeSession.ID))
+	logger.Info("starting telegram polling")
+
+	if err := bot.Start(ctx, messageHandler); err != nil {
+		logger.Error("telegram polling error", slog.String("error", err.Error()))
+	}
 	logger.Info("shutting down")
 }

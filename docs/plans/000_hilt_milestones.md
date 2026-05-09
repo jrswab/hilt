@@ -96,7 +96,7 @@ All milestones are **tracer bullets** — vertical, end-to-end slices that prove
   - Prune old archived sessions on startup
   - Implement `GetActiveSession`, `ArchiveSession`, `CreateSession`, `PruneOldSessions`
 
-- [ ] **004: Telegram — Long-polling loop with `gotgbot/v2`**
+- [x] **004: Telegram — Long-polling loop with `gotgbot/v2`**
   - Initialize bot with token from config
   - Start polling dispatcher with 60s timeout
   - Handle text messages: route to message processor
