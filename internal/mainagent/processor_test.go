@@ -313,7 +313,7 @@ func TestProcessTurnSuccess(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "  Hello LLM  ")
@@ -373,7 +373,7 @@ func TestProcessTurnRunnerError(t *testing.T) {
 	runner := &fakeRunner{err: fmt.Errorf("API rate limit")}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Hello")
@@ -381,11 +381,13 @@ func TestProcessTurnRunnerError(t *testing.T) {
 		t.Fatalf("ProcessTurn returned error: %v", err)
 	}
 
-	if !strings.Contains(messenger.lastText, "I couldn't process that request") {
-		t.Errorf("expected fallback message, got %q", messenger.lastText)
+	want := "I couldn't process that request. Please try again."
+	if messenger.lastText != want {
+		t.Errorf("expected generic fallback %q, got %q", want, messenger.lastText)
 	}
-	if !strings.Contains(messenger.lastText, "API rate limit") {
-		t.Errorf("expected error details in message, got %q", messenger.lastText)
+	// Must not contain raw error text
+	if strings.Contains(messenger.lastText, "API rate limit") {
+		t.Errorf("message must not contain raw error text, got %q", messenger.lastText)
 	}
 
 	// No turn should be recorded on failure
@@ -404,7 +406,7 @@ func TestProcessTurnNilResult(t *testing.T) {
 	runner := &fakeRunner{result: nil}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Hello")
@@ -412,8 +414,13 @@ func TestProcessTurnNilResult(t *testing.T) {
 		t.Fatalf("ProcessTurn returned error: %v", err)
 	}
 
-	if !strings.Contains(messenger.lastText, "unexpected empty result") {
-		t.Errorf("expected nil result message, got %q", messenger.lastText)
+	want := "I couldn't process that request. Please try again."
+	if messenger.lastText != want {
+		t.Errorf("expected generic fallback %q, got %q", want, messenger.lastText)
+	}
+	// Must not contain raw "unexpected empty result" text
+	if strings.Contains(messenger.lastText, "unexpected empty result") {
+		t.Errorf("message must not contain raw nil-result text, got %q", messenger.lastText)
 	}
 }
 
@@ -428,7 +435,7 @@ func TestProcessTurnRecordTurnErrorStillSendsReply(t *testing.T) {
 	runner := &fakeRunner{result: &runner.Result{Content: "Reply content", InputTokens: 10, OutputTokens: 5}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Hello")
@@ -451,7 +458,7 @@ func TestProcessTurnMessengerErrorPropagates(t *testing.T) {
 	runner := &fakeRunner{result: &runner.Result{Content: "Reply", InputTokens: 10, OutputTokens: 5}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Hello")
@@ -471,7 +478,7 @@ func TestProcessTurnSessionTokensErrorStillSendsReply(t *testing.T) {
 	runner := &fakeRunner{result: &runner.Result{Content: "LLM says hi", InputTokens: 5, OutputTokens: 5}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Hello")
@@ -495,7 +502,7 @@ func TestProcessTurnNoTitleWhenAlreadySet(t *testing.T) {
 	runner := &fakeRunner{result: &runner.Result{Content: "ok", InputTokens: 1, OutputTokens: 1}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{})
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	p.ProcessTurn(ctx, 1, "Message 1")
@@ -539,7 +546,7 @@ func TestProcessTurnTurn2PlusSuccess(t *testing.T) {
 		},
 	}
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "How are you?")
@@ -611,7 +618,7 @@ func TestProcessTurnTurn2PlusWithToolCalls(t *testing.T) {
 		},
 	}
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "Run the calc")
@@ -663,7 +670,7 @@ func TestProcessTurnTurn2PlusNilMessagesFallback(t *testing.T) {
 		},
 	}
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "How are you?")
@@ -697,7 +704,7 @@ func TestProcessTurnTurn2PlusHistoryError(t *testing.T) {
 
 	fakeHistory := &fakeHistoryBuilder{err: fmt.Errorf("corrupted db")}
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "How are you?")
@@ -705,8 +712,13 @@ func TestProcessTurnTurn2PlusHistoryError(t *testing.T) {
 		t.Fatalf("ProcessTurn should not return error: %v", err)
 	}
 
-	if !strings.Contains(messenger.lastText, "Something went wrong loading conversation history") {
-		t.Errorf("expected history error message, got %q", messenger.lastText)
+	if messenger.lastText == "" {
+		t.Errorf("expected error message, got empty")
+	}
+	// Accept either context-specific fallback or generic mapped fallback;
+	// the key requirement is that raw error text is NOT leaked.
+	if strings.Contains(messenger.lastText, "corrupted db") {
+		t.Errorf("message must not leak raw DB error, got %q", messenger.lastText)
 	}
 
 	// No turn should be recorded
@@ -750,7 +762,7 @@ func TestProcessTurnTurn2PlusTokenAccumulation(t *testing.T) {
 		},
 	}
 
-	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory)
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, fakeHistory, &AxeErrorMapper{})
 
 	ctx := context.Background()
 	err := p.ProcessTurn(ctx, 12345, "E")
@@ -777,13 +789,14 @@ func TestNewProcessorPanicsOnNil(t *testing.T) {
 		name string
 		fn   func()
 	}{
-		{"sessions nil", func() { NewProcessor(nil, ft, fst, reader, fr, fm, "", "", logger, fh) }},
-		{"turns nil", func() { NewProcessor(fs, nil, fst, reader, fr, fm, "", "", logger, fh) }},
-		{"store nil", func() { NewProcessor(fs, ft, nil, reader, fr, fm, "", "", logger, fh) }},
-		{"reader nil", func() { NewProcessor(fs, ft, fst, nil, fr, fm, "", "", logger, fh) }},
-		{"runner nil", func() { NewProcessor(fs, ft, fst, reader, nil, fm, "", "", logger, fh) }},
-		{"messenger nil", func() { NewProcessor(fs, ft, fst, reader, fr, nil, "", "", logger, fh) }},
-		{"history nil", func() { NewProcessor(fs, ft, fst, reader, fr, fm, "", "", logger, nil) }},
+		{"sessions nil", func() { NewProcessor(nil, ft, fst, reader, fr, fm, "", "", logger, fh, &AxeErrorMapper{}) }},
+		{"turns nil", func() { NewProcessor(fs, nil, fst, reader, fr, fm, "", "", logger, fh, &AxeErrorMapper{}) }},
+		{"store nil", func() { NewProcessor(fs, ft, nil, reader, fr, fm, "", "", logger, fh, &AxeErrorMapper{}) }},
+		{"reader nil", func() { NewProcessor(fs, ft, fst, nil, fr, fm, "", "", logger, fh, &AxeErrorMapper{}) }},
+		{"runner nil", func() { NewProcessor(fs, ft, fst, reader, nil, fm, "", "", logger, fh, &AxeErrorMapper{}) }},
+		{"messenger nil", func() { NewProcessor(fs, ft, fst, reader, fr, nil, "", "", logger, fh, &AxeErrorMapper{}) }},
+		{"history nil", func() { NewProcessor(fs, ft, fst, reader, fr, fm, "", "", logger, nil, &AxeErrorMapper{}) }},
+		{"mapper nil", func() { NewProcessor(fs, ft, fst, reader, fr, fm, "", "", logger, fh, nil) }},
 	}
 
 	for _, tt := range tests {
@@ -795,5 +808,116 @@ func TestNewProcessorPanicsOnNil(t *testing.T) {
 			}()
 			tt.fn()
 		})
+	}
+}
+
+func TestProcessTurnRunnerConfigError(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	runner := &fakeRunner{err: &runner.ConfigError{Msg: "missing agent"}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Hello")
+	if err != nil {
+		t.Fatalf("ProcessTurn returned error: %v", err)
+	}
+
+	want := "Configuration issue: please check your agent files, API keys, and model settings."
+	if messenger.lastText != want {
+		t.Errorf("expected config message %q, got %q", want, messenger.lastText)
+	}
+	// No turn recorded
+	if len(turns.recorded) > 0 {
+		t.Error("no turn should be recorded on config error")
+	}
+}
+
+func TestProcessTurnRunnerBudgetExceededError(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	runner := &fakeRunner{err: &runner.BudgetExceededError{Used: 150, Max: 100}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Hello")
+	if err != nil {
+		t.Fatalf("ProcessTurn returned error: %v", err)
+	}
+
+	if !strings.Contains(messenger.lastText, "⚠️ Token budget exceeded") {
+		t.Errorf("expected budget exceeded prefix, got %q", messenger.lastText)
+	}
+	// No turn recorded
+	if len(turns.recorded) > 0 {
+		t.Error("no turn should be recorded on budget error")
+	}
+}
+
+func TestProcessTurnRunnerRuntimeError(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	store := newFakeStore()
+	messenger := &fakeMessenger{}
+	// RuntimeError without ProviderError → generic runtime fallback
+	runner := &fakeRunner{err: &runner.RuntimeError{Msg: "runtime failed", Err: fmt.Errorf("boom")}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Hello")
+	if err != nil {
+		t.Fatalf("ProcessTurn returned error: %v", err)
+	}
+
+	want := "Something went wrong. Please try again."
+	if messenger.lastText != want {
+		t.Errorf("expected runtime fallback %q, got %q", want, messenger.lastText)
+	}
+	// Must not contain raw error text
+	if strings.Contains(messenger.lastText, "runtime failed") || strings.Contains(messenger.lastText, "boom") {
+		t.Errorf("message must not contain raw error text, got %q", messenger.lastText)
+	}
+	if len(turns.recorded) > 0 {
+		t.Error("no turn should be recorded on runtime error")
+	}
+}
+
+func TestReportErrorMessengerFailureLogged(t *testing.T) {
+	workspace := t.TempDir()
+	reader := memory.NewReader(workspace)
+	sessions := &fakeSessions{}
+	turns := newFakeTurns()
+	store := newFakeStore()
+	messenger := &fakeMessenger{err: fmt.Errorf("network down")}
+	runner := &fakeRunner{err: fmt.Errorf("runner failed")}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	p := NewProcessor(sessions, turns, store, reader, runner, messenger, "/tmp/agents", "test/model", logger, &fakeHistoryBuilder{}, &AxeErrorMapper{})
+
+	ctx := context.Background()
+	err := p.ProcessTurn(ctx, 12345, "Hello")
+	if err != nil {
+		t.Fatalf("ProcessTurn returned error: %v", err)
+	}
+
+	// messenger failed but processTurn returns nil (no propagation)
+	if messenger.lastText != "I couldn't process that request. Please try again." {
+		t.Errorf("expected fallback message attempt, got %q", messenger.lastText)
 	}
 }

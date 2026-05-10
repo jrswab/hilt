@@ -148,6 +148,7 @@ type Processor struct {
 	messenger Messenger
 	history   HistoryBuilder
 	logger    *slog.Logger
+	mapper    ErrorMapper
 }
 
 // NewProcessor creates a Processor with all dependencies validated.
@@ -162,6 +163,7 @@ func NewProcessor(
 	model string,
 	logger *slog.Logger,
 	history HistoryBuilder,
+	mapper ErrorMapper,
 ) *Processor {
 	if sessions == nil {
 		panic("sessions must not be nil")
@@ -184,6 +186,9 @@ func NewProcessor(
 	if history == nil {
 		panic("history must not be nil")
 	}
+	if mapper == nil {
+		panic("mapper must not be nil")
+	}
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -198,6 +203,7 @@ func NewProcessor(
 		messenger: messenger,
 		history:   history,
 		logger:    logger,
+		mapper:    mapper,
 	}
 }
 
@@ -255,6 +261,24 @@ func assembleContext(reader FileReader, userMessage string) (string, error) {
 	return b.String(), nil
 }
 
+// reportError logs the raw error, maps it to a user-facing message, and sends it via messenger.
+func (p *Processor) reportError(ctx context.Context, chatID int64, err error, fallbackMsg string) {
+	p.logger.Error("processing error", slog.Any("error", err))
+
+	msg := p.mapper.Map(err)
+	if msg == "" {
+		if fallbackMsg != "" {
+			msg = fallbackMsg
+		} else {
+			msg = "I couldn't process that request. Please try again."
+		}
+	}
+
+	if sendErr := p.messenger.SendMessage(ctx, chatID, msg); sendErr != nil {
+		p.logger.Error("messenger send failed", slog.Any("error", sendErr))
+	}
+}
+
 // truncateTitle returns the input truncated to maxRunes runes.
 func truncateTitle(input string, maxRunes int) string {
 	if utf8.RuneCountInString(input) <= maxRunes {
@@ -271,15 +295,13 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 
 	session, err := p.sessions.GetActiveSession(ctx)
 	if err != nil {
-		p.logger.Error("get active session failed", slog.Any("error", err))
-		_ = p.messenger.SendMessage(ctx, chatID, "Something went wrong preparing your session.")
+		p.reportError(ctx, chatID, err, "Something went wrong preparing your session.")
 		return nil
 	}
 
 	turnCount, err := p.turns.GetTurnCount(ctx, session.ID)
 	if err != nil {
-		p.logger.Error("get turn count failed", slog.Any("error", err))
-		_ = p.messenger.SendMessage(ctx, chatID, "Something went wrong preparing your session.")
+		p.reportError(ctx, chatID, err, "Something went wrong preparing your session.")
 		return nil
 	}
 
@@ -290,8 +312,7 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 	// Turn 1
 	assembled, err := assembleContext(p.reader, trimmed)
 	if err != nil {
-		p.logger.Error("assemble context failed", slog.Any("error", err))
-		_ = p.messenger.SendMessage(ctx, chatID, "Something went wrong preparing your session.")
+		p.reportError(ctx, chatID, err, "Something went wrong preparing your session.")
 		return nil
 	}
 
@@ -304,14 +325,12 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 
 	result, err := p.runner.Run(ctx, opts)
 	if err != nil {
-		p.logger.Error("runner failed", slog.Any("error", err))
-		_ = p.messenger.SendMessage(ctx, chatID, "I couldn't process that request: "+err.Error())
+		p.reportError(ctx, chatID, err, "")
 		return nil
 	}
 
 	if result == nil {
-		p.logger.Error("runner returned nil result")
-		_ = p.messenger.SendMessage(ctx, chatID, "I couldn't process that request: unexpected empty result")
+		p.reportError(ctx, chatID, nil, "")
 		return nil
 	}
 
@@ -367,8 +386,7 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 func (p *Processor) processTurn2Plus(ctx context.Context, chatID int64, trimmed string, session *session.Session, turnCount int) error {
 	historyMsgs, err := p.history.BuildMessages(ctx, session.ID)
 	if err != nil {
-		p.logger.Error("build messages failed", slog.Any("error", err))
-		_ = p.messenger.SendMessage(ctx, chatID, "Something went wrong loading conversation history.")
+		p.reportError(ctx, chatID, err, "Something went wrong loading conversation history.")
 		return nil
 	}
 
@@ -384,14 +402,12 @@ func (p *Processor) processTurn2Plus(ctx context.Context, chatID int64, trimmed 
 
 	result, err := p.runner.Run(ctx, opts)
 	if err != nil {
-		p.logger.Error("runner failed", slog.Any("error", err))
-		_ = p.messenger.SendMessage(ctx, chatID, "I couldn't process that request: "+err.Error())
+		p.reportError(ctx, chatID, err, "")
 		return nil
 	}
 
 	if result == nil {
-		p.logger.Error("runner returned nil result")
-		_ = p.messenger.SendMessage(ctx, chatID, "I couldn't process that request: unexpected empty result")
+		p.reportError(ctx, chatID, nil, "")
 		return nil
 	}
 

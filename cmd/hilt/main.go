@@ -168,6 +168,7 @@ func main() {
 		cfg.MainAgentModel,
 		logger,
 		historyBuilder,
+		&mainagent.AxeErrorMapper{},
 	)
 
 	router := server.NewRouter(bot, mgr, processor, cfg.SessionTTLDays, logger)

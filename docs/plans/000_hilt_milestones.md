@@ -131,7 +131,7 @@ All milestones are **tracer bullets** — vertical, end-to-end slices that prove
   - Store delta in new `turns` row
   - Update session `last_activity`, `total_input_tokens`, `total_output_tokens`
 
-- [ ] **008: Error Handling — Map Axe errors to Telegram replies**
+- [x] **008: Error Handling — Map Axe errors to Telegram replies**
   - Type-switch on `runner.Run()` error returns
   - `ConfigError` → "Configuration issue: ..."
   - `BudgetExceededError` → "⚠️ Token budget exceeded ..."
