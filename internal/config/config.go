@@ -115,7 +115,13 @@ allowed_user_ids = []
 	// Write agents/main.toml only if absent
 	mainAgentPath := filepath.Join(agentsDir, "main.toml")
 	if _, err := os.Stat(mainAgentPath); os.IsNotExist(err) {
-		mainAgentStub := `system_prompt = "You are Hilt's main agent."
+		mainAgentStub := `system_prompt = """
+You are Hilt, a minimal and efficient personal assistant.
+You help the user manage their workspace, memory, and tasks via Telegram.
+You have access to file tools (read, write, edit, list) and a sandboxed run_command.
+You work from the user's workspace directory.
+Memory is managed via daily notes and critical state files — use these when relevant.
+"""
 tools = []
 `
 		if err := os.WriteFile(mainAgentPath, []byte(mainAgentStub), 0644); err != nil {
