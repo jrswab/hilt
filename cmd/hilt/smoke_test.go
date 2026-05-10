@@ -119,6 +119,7 @@ func TestSmoke(t *testing.T) {
 		fakeMessenger,
 		agentsDir,
 		cfg.MainAgentModel,
+		nil,
 		logger,
 		historyBuilder,
 		&mainagent.AxeErrorMapper{},

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -138,17 +139,21 @@ var validRoles = map[string]bool{
 
 // Processor is the main agent execution orchestrator.
 type Processor struct {
-	sessions  ActiveSessionProvider
-	turns     TurnStore
-	store     SessionStore
-	reader    FileReader
-	agentsDir string
-	model     string
-	runner    Runner
-	messenger Messenger
-	history   HistoryBuilder
-	logger    *slog.Logger
-	mapper    ErrorMapper
+	sessions   ActiveSessionProvider
+	turns      TurnStore
+	store      SessionStore
+	reader     FileReader
+	agentsDir  string
+	model      string
+	models     map[string]int
+	modelMu    sync.RWMutex
+	runner     Runner
+	messenger  Messenger
+	history    HistoryBuilder
+	logger     *slog.Logger
+	mapper     ErrorMapper
+	statusMu   sync.Mutex
+	lastResult *runner.Result
 }
 
 // NewProcessor creates a Processor with all dependencies validated.
@@ -161,6 +166,7 @@ func NewProcessor(
 	messenger Messenger,
 	agentsDir string,
 	model string,
+	models map[string]int,
 	logger *slog.Logger,
 	history HistoryBuilder,
 	mapper ErrorMapper,
@@ -192,6 +198,9 @@ func NewProcessor(
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if models == nil {
+		models = map[string]int{}
+	}
 	return &Processor{
 		sessions:  sessions,
 		turns:     turns,
@@ -199,6 +208,7 @@ func NewProcessor(
 		reader:    reader,
 		agentsDir: agentsDir,
 		model:     model,
+		models:    models,
 		runner:    runner,
 		messenger: messenger,
 		history:   history,
@@ -319,7 +329,7 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 	opts := runner.Options{
 		AgentName:  "main",
 		AgentsDirs: []string{p.agentsDir},
-		Model:      p.model,
+		Model:      p.currentModel(),
 		Prompt:     assembled,
 	}
 
@@ -351,6 +361,8 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 		_ = p.messenger.SendMessage(ctx, chatID, result.Content)
 		return nil
 	}
+
+	p.setLastResult(result)
 
 	// Update session tokens
 	if err := p.store.UpdateSessionTokens(ctx, session.ID, int64(result.InputTokens), int64(result.OutputTokens)); err != nil {
@@ -396,7 +408,7 @@ func (p *Processor) processTurn2Plus(ctx context.Context, chatID int64, trimmed 
 	opts := runner.Options{
 		AgentName:  "main",
 		AgentsDirs: []string{p.agentsDir},
-		Model:      p.model,
+		Model:      p.currentModel(),
 		Messages:   historyMsgs,
 	}
 
@@ -427,6 +439,8 @@ func (p *Processor) processTurn2Plus(ctx context.Context, chatID int64, trimmed 
 		return nil
 	}
 
+	p.setLastResult(result)
+
 	// Update session tokens
 	if err := p.store.UpdateSessionTokens(ctx, session.ID, int64(result.InputTokens), int64(result.OutputTokens)); err != nil {
 		p.logger.Warn("update session tokens failed", slog.Any("error", err))
@@ -446,5 +460,90 @@ func (p *Processor) processTurn2Plus(ctx context.Context, chatID int64, trimmed 
 		return err
 	}
 	return nil
+}
+
+func (p *Processor) setLastResult(result *runner.Result) {
+	p.statusMu.Lock()
+	defer p.statusMu.Unlock()
+	p.lastResult = result
+}
+
+func (p *Processor) currentModel() string {
+	p.modelMu.RLock()
+	defer p.modelMu.RUnlock()
+	return p.model
+}
+
+// CurrentModel returns the active model name.
+func (p *Processor) CurrentModel() string {
+	return p.currentModel()
+}
+
+// SetModel changes the active model to name. If models were configured
+// via config.toml, the name must exist in that map.
+func (p *Processor) SetModel(name string) error {
+	if name == "" {
+		return fmt.Errorf("model name must not be empty")
+	}
+	p.modelMu.Lock()
+	defer p.modelMu.Unlock()
+	if len(p.models) > 0 {
+		if _, ok := p.models[name]; !ok {
+			return fmt.Errorf("model %q is not in the configured models list", name)
+		}
+	}
+	p.model = name
+	return nil
+}
+
+// AvailableModels returns the map of configured model names to context windows.
+func (p *Processor) AvailableModels() map[string]int {
+	p.modelMu.RLock()
+	defer p.modelMu.RUnlock()
+	out := make(map[string]int, len(p.models))
+	for k, v := range p.models {
+		out[k] = v
+	}
+	return out
+}
+
+// Status returns a formatted summary of the current model, session token
+// usage, and the most recent axe run metadata.
+func (p *Processor) Status(ctx context.Context, chatID int64) (string, error) {
+	session, err := p.sessions.GetActiveSession(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	p.statusMu.Lock()
+	lr := p.lastResult
+	p.statusMu.Unlock()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Model: %s\n", p.currentModel())
+	fmt.Fprintf(&b, "Session Tokens:\n")
+	fmt.Fprintf(&b, "  Input: %d\n", session.TotalInputTokens)
+	fmt.Fprintf(&b, "  Output: %d\n", session.TotalOutputTokens)
+	fmt.Fprintf(&b, "  Total: %d\n", session.TotalInputTokens+session.TotalOutputTokens)
+
+	if lr != nil {
+		fmt.Fprintf(&b, "\nLast Turn:\n")
+		fmt.Fprintf(&b, "  Input Tokens: %d\n", lr.InputTokens)
+		fmt.Fprintf(&b, "  Output Tokens: %d\n", lr.OutputTokens)
+		fmt.Fprintf(&b, "  Cost: $%.6f\n", lr.Cost)
+		fmt.Fprintf(&b, "  Duration: %dms\n", lr.DurationMs)
+		fmt.Fprintf(&b, "  Stop Reason: %s\n", lr.StopReason)
+		fmt.Fprintf(&b, "  Cache Status: %s\n", lr.CacheStatus)
+		fmt.Fprintf(&b, "  Tool Calls: %d\n", lr.ToolCalls)
+		fmt.Fprintf(&b, "  Refused: %t\n", lr.Refused)
+		fmt.Fprintf(&b, "  Retry Attempts: %d\n", lr.RetryAttempts)
+		if lr.Budget.Max > 0 {
+			fmt.Fprintf(&b, "  Budget: %d/%d (exceeded: %t)\n", lr.Budget.Used, lr.Budget.Max, lr.Budget.Exceeded)
+		}
+	} else {
+		fmt.Fprintf(&b, "\nNo turns processed yet in this session.\n")
+	}
+
+	return b.String(), nil
 }
 

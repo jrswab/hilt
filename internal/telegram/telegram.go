@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"time"
 
 	"github.com/PaulSonOfLars/gotgbot/v2"
 	"github.com/PaulSonOfLars/gotgbot/v2/ext"
@@ -48,6 +50,9 @@ func (bot *Bot) Start(ctx context.Context, handler MessageHandler) error {
 		GetUpdatesOpts: &gotgbot.GetUpdatesOpts{
 			Timeout:        60,
 			AllowedUpdates: []string{"message"},
+			RequestOpts: &gotgbot.RequestOpts{
+				Timeout: 75 * time.Second,
+			},
 		},
 	})
 	if err != nil {
@@ -138,7 +143,12 @@ func NewBot(token string, allowed []int64) (*Bot, error) {
 		return nil, errors.New("telegram bot token is empty")
 	}
 
-	api, err := gotgbot.NewBot(token, nil)
+	api, err := gotgbot.NewBot(token, &gotgbot.BotOpts{
+		BotClient: &gotgbot.BaseBotClient{
+			Client:             http.Client{Timeout: 75 * time.Second},
+			DefaultRequestOpts: &gotgbot.RequestOpts{Timeout: 75 * time.Second},
+		},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("creating telegram bot: %w", err)
 	}

@@ -166,6 +166,7 @@ func main() {
 		bot,            // Messenger
 		agentsDir,
 		cfg.MainAgentModel,
+		cfg.Models,
 		logger,
 		historyBuilder,
 		&mainagent.AxeErrorMapper{},

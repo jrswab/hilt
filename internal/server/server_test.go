@@ -56,6 +56,42 @@ func (f *fakeSessionManager) ListArchivedSessions(ctx context.Context, cutoff ti
 	return f.archivedSessions, f.archivedSessionsErr
 }
 
+// fakeProcessor implements TurnProcessor, StatusProvider, and ModelManager for tests.
+type fakeProcessor struct {
+	status          string
+	statusErr       error
+	currentModel    string
+	setModelErr     error
+	availableModels map[string]int
+}
+
+func (f *fakeProcessor) ProcessTurn(ctx context.Context, chatID int64, text string) error {
+	return nil
+}
+
+func (f *fakeProcessor) Status(ctx context.Context, chatID int64) (string, error) {
+	return f.status, f.statusErr
+}
+
+func (f *fakeProcessor) CurrentModel() string {
+	return f.currentModel
+}
+
+func (f *fakeProcessor) SetModel(name string) error {
+	if f.setModelErr != nil {
+		return f.setModelErr
+	}
+	f.currentModel = name
+	return nil
+}
+
+func (f *fakeProcessor) AvailableModels() map[string]int {
+	if f.availableModels == nil {
+		return map[string]int{}
+	}
+	return f.availableModels
+}
+
 func testRouter(fm *fakeMessenger, fs *fakeSessionManager, processor TurnProcessor) *Router {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	return NewRouter(fm, fs, processor, 30, logger)
@@ -181,6 +217,121 @@ func TestRouterCommandParsing(t *testing.T) {
 		}
 		if !strings.Contains(fm.messages[0].text, "main agent is not yet online") {
 			t.Errorf("unexpected message: %q", fm.messages[0].text)
+		}
+	})
+
+	t.Run("routes /status to handleStatusCmd", func(t *testing.T) {
+		fm := &fakeMessenger{}
+		fs := &fakeSessionManager{}
+		sp := &fakeProcessor{status: "Model: test-model\nSession Tokens: 42"}
+		r := testRouter(fm, fs, sp)
+		_ = r.HandleMessage(context.Background(), 123, "/status")
+		if len(fm.messages) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(fm.messages))
+		}
+		if !strings.Contains(fm.messages[0].text, "Model: test-model") {
+			t.Errorf("unexpected message: %q", fm.messages[0].text)
+		}
+	})
+
+	t.Run("/status without provider", func(t *testing.T) {
+		fm := &fakeMessenger{}
+		fs := &fakeSessionManager{}
+		r := testRouter(fm, fs, nil)
+		_ = r.HandleMessage(context.Background(), 123, "/status")
+		if len(fm.messages) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(fm.messages))
+		}
+		if !strings.Contains(fm.messages[0].text, "Status is not available") {
+			t.Errorf("unexpected message: %q", fm.messages[0].text)
+		}
+	})
+
+	t.Run("/model shows current model", func(t *testing.T) {
+		fm := &fakeMessenger{}
+		fs := &fakeSessionManager{}
+		fp := &fakeProcessor{currentModel: "anthropic/claude-test"}
+		r := testRouter(fm, fs, fp)
+		_ = r.HandleMessage(context.Background(), 123, "/model")
+		if len(fm.messages) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(fm.messages))
+		}
+		if !strings.Contains(fm.messages[0].text, "anthropic/claude-test") {
+			t.Errorf("unexpected message: %q", fm.messages[0].text)
+		}
+	})
+
+	t.Run("/model <name> switches model", func(t *testing.T) {
+		fm := &fakeMessenger{}
+		fs := &fakeSessionManager{}
+		fp := &fakeProcessor{currentModel: "old-model", availableModels: map[string]int{"new-model": 200000}}
+		r := testRouter(fm, fs, fp)
+		_ = r.HandleMessage(context.Background(), 123, "/model new-model")
+		if len(fm.messages) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(fm.messages))
+		}
+		if !strings.Contains(fm.messages[0].text, "Model switched to: new-model") {
+			t.Errorf("unexpected message: %q", fm.messages[0].text)
+		}
+		if fp.currentModel != "new-model" {
+			t.Errorf("expected current model to be updated to %q, got %q", "new-model", fp.currentModel)
+		}
+	})
+
+	t.Run("/models lists available models", func(t *testing.T) {
+		fm := &fakeMessenger{}
+		fs := &fakeSessionManager{}
+		fp := &fakeProcessor{
+			currentModel:    "model-a",
+			availableModels: map[string]int{"model-a": 100000, "model-b": 200000},
+		}
+		r := testRouter(fm, fs, fp)
+		_ = r.HandleMessage(context.Background(), 123, "/models")
+		if len(fm.messages) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(fm.messages))
+		}
+		msg := fm.messages[0].text
+		if !strings.Contains(msg, "model-a") {
+			t.Errorf("expected model-a in message, got: %q", msg)
+		}
+		if !strings.Contains(msg, "model-b") {
+			t.Errorf("expected model-b in message, got: %q", msg)
+		}
+		if !strings.Contains(msg, "/model <name>") {
+			t.Errorf("expected usage hint in message, got: %q", msg)
+		}
+	})
+
+	t.Run("/models without provider", func(t *testing.T) {
+		fm := &fakeMessenger{}
+		fs := &fakeSessionManager{}
+		r := testRouter(fm, fs, nil)
+		_ = r.HandleMessage(context.Background(), 123, "/models")
+		if len(fm.messages) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(fm.messages))
+		}
+		if !strings.Contains(fm.messages[0].text, "Model management is not available") {
+			t.Errorf("unexpected message: %q", fm.messages[0].text)
+		}
+	})
+
+	t.Run("/skills lists available commands", func(t *testing.T) {
+		fm := &fakeMessenger{}
+		fs := &fakeSessionManager{}
+		r := testRouter(fm, fs, nil)
+		_ = r.HandleMessage(context.Background(), 123, "/skills")
+		if len(fm.messages) != 1 {
+			t.Fatalf("expected 1 message, got %d", len(fm.messages))
+		}
+		msg := fm.messages[0].text
+		if !strings.Contains(msg, "Available commands:") {
+			t.Errorf("expected 'Available commands:' in message, got: %q", msg)
+		}
+		if !strings.Contains(msg, "/new") {
+			t.Errorf("expected '/new' in message, got: %q", msg)
+		}
+		if !strings.Contains(msg, "/skills") {
+			t.Errorf("expected '/skills' in message, got: %q", msg)
 		}
 	})
 

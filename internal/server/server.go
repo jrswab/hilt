@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,6 +29,18 @@ type SessionManager interface {
 // TurnProcessor handles normal (non-command) messages.
 type TurnProcessor interface {
 	ProcessTurn(ctx context.Context, chatID int64, text string) error
+}
+
+// StatusProvider returns a human-readable status summary for the current session.
+type StatusProvider interface {
+	Status(ctx context.Context, chatID int64) (string, error)
+}
+
+// ModelManager allows runtime inspection and switching of the LLM model.
+type ModelManager interface {
+	CurrentModel() string
+	SetModel(name string) error
+	AvailableModels() map[string]int
 }
 
 // Router holds dependencies for dispatching incoming messages.
@@ -67,9 +80,10 @@ func (r *Router) HandleMessage(ctx context.Context, chatID int64, text string) e
 	trimmed := strings.TrimSpace(text)
 	if strings.HasPrefix(trimmed, "/") {
 		after := trimmed[1:]
-		var cmd string
+		var cmd, args string
 		if i := strings.IndexByte(after, ' '); i >= 0 {
 			cmd = after[:i]
+			args = strings.TrimSpace(after[i+1:])
 		} else {
 			cmd = after
 		}
@@ -79,6 +93,14 @@ func (r *Router) HandleMessage(ctx context.Context, chatID int64, text string) e
 			r.handleNewCmd(ctx, chatID)
 		case "sessions":
 			r.handleSessionsCmd(ctx, chatID)
+		case "status":
+			r.handleStatusCmd(ctx, chatID)
+		case "model":
+			r.handleModelCmd(ctx, chatID, args)
+		case "models":
+			r.handleModelsCmd(ctx, chatID)
+		case "skills":
+			r.handleSkillsCmd(ctx, chatID)
 		default:
 			r.sendUnknownCommand(ctx, chatID)
 		}
@@ -152,6 +174,111 @@ func (r *Router) handleSessionsCmd(ctx context.Context, chatID int64) {
 			s.ArchivedAt.Format(time.RFC3339)))
 	}
 
+	if sendErr := r.messenger.SendMessage(ctx, chatID, strings.Join(lines, "\n")); sendErr != nil {
+		r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+	}
+}
+
+func (r *Router) handleStatusCmd(ctx context.Context, chatID int64) {
+	sp, ok := r.processor.(StatusProvider)
+	if !ok {
+		if sendErr := r.messenger.SendMessage(ctx, chatID, "Status is not available right now."); sendErr != nil {
+			r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+		}
+		return
+	}
+
+	status, err := sp.Status(ctx, chatID)
+	if err != nil {
+		r.logger.Error("status failed", slog.Any("error", err))
+		if sendErr := r.messenger.SendMessage(ctx, chatID, "Could not retrieve status."); sendErr != nil {
+			r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+		}
+		return
+	}
+
+	if sendErr := r.messenger.SendMessage(ctx, chatID, status); sendErr != nil {
+		r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+	}
+}
+
+func (r *Router) handleModelCmd(ctx context.Context, chatID int64, args string) {
+	mm, ok := r.processor.(ModelManager)
+	if !ok {
+		if sendErr := r.messenger.SendMessage(ctx, chatID, "Model management is not available right now."); sendErr != nil {
+			r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+		}
+		return
+	}
+
+	if args == "" {
+		current := mm.CurrentModel()
+		if sendErr := r.messenger.SendMessage(ctx, chatID, fmt.Sprintf("Current model: %s", current)); sendErr != nil {
+			r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+		}
+		return
+	}
+
+	if err := mm.SetModel(args); err != nil {
+		r.logger.Error("set model failed", slog.Any("error", err))
+		if sendErr := r.messenger.SendMessage(ctx, chatID, fmt.Sprintf("Could not switch model: %v", err)); sendErr != nil {
+			r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+		}
+		return
+	}
+
+	if sendErr := r.messenger.SendMessage(ctx, chatID, fmt.Sprintf("Model switched to: %s", args)); sendErr != nil {
+		r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+	}
+}
+
+func (r *Router) handleModelsCmd(ctx context.Context, chatID int64) {
+	mm, ok := r.processor.(ModelManager)
+	if !ok {
+		if sendErr := r.messenger.SendMessage(ctx, chatID, "Model management is not available right now."); sendErr != nil {
+			r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+		}
+		return
+	}
+
+	models := mm.AvailableModels()
+	current := mm.CurrentModel()
+
+	if len(models) == 0 {
+		if sendErr := r.messenger.SendMessage(ctx, chatID, fmt.Sprintf("No models configured. Current model: %s", current)); sendErr != nil {
+			r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+		}
+		return
+	}
+
+	names := make([]string, 0, len(models))
+	for name := range models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Available models (current: %s):", current))
+	for _, name := range names {
+		lines = append(lines, fmt.Sprintf("  %s (context: %d)", name, models[name]))
+	}
+	lines = append(lines, "\nUse /model <name> to switch.")
+
+	if sendErr := r.messenger.SendMessage(ctx, chatID, strings.Join(lines, "\n")); sendErr != nil {
+		r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+	}
+}
+
+func (r *Router) handleSkillsCmd(ctx context.Context, chatID int64) {
+	lines := []string{
+		"Available commands:",
+		"  /new      – start a new session",
+		"  /sessions – list archived sessions",
+		"  /status   – show current session status",
+		"  /model    – show or switch the active model",
+		"  /models   – list all available models",
+		"  /skills   – show this help message",
+	}
 	if sendErr := r.messenger.SendMessage(ctx, chatID, strings.Join(lines, "\n")); sendErr != nil {
 		r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
 	}
