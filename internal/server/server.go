@@ -92,7 +92,9 @@ func (r *Router) handleNewCmd(ctx context.Context, chatID int64) {
 	active, err := r.sessions.GetActiveSession(ctx)
 	if err != nil && !internal.IsNotFound(err) {
 		r.logger.Error("get active session failed", slog.Any("error", err))
-		_ = r.messenger.SendMessage(ctx, chatID, "Something went wrong starting a new session.")
+		if sendErr := r.messenger.SendMessage(ctx, chatID, "Something went wrong starting a new session."); sendErr != nil {
+			r.logger.Error("messenger send failed", slog.Any("error", sendErr))
+		}
 		return
 	}
 
@@ -109,11 +111,15 @@ func (r *Router) handleNewCmd(ctx context.Context, chatID int64) {
 	newSession, err := r.sessions.CreateSession(ctx)
 	if err != nil {
 		r.logger.Error("create session failed", slog.Any("error", err))
-		_ = r.messenger.SendMessage(ctx, chatID, "Something went wrong starting a new session.")
+		if sendErr := r.messenger.SendMessage(ctx, chatID, "Something went wrong starting a new session."); sendErr != nil {
+			r.logger.Error("messenger send failed", slog.Any("error", sendErr))
+		}
 		return
 	}
 
-	_ = r.messenger.SendMessage(ctx, chatID, fmt.Sprintf("New session started (ID: %d).", newSession.ID))
+	if sendErr := r.messenger.SendMessage(ctx, chatID, fmt.Sprintf("New session started (ID: %d).", newSession.ID)); sendErr != nil {
+		r.logger.Error("messenger send failed", slog.Any("error", sendErr))
+	}
 }
 
 func (r *Router) handleSessionsCmd(ctx context.Context, chatID int64) {
@@ -121,12 +127,16 @@ func (r *Router) handleSessionsCmd(ctx context.Context, chatID int64) {
 	sessions, err := r.sessions.ListArchivedSessions(ctx, cutoff)
 	if err != nil {
 		r.logger.Error("list archived sessions failed", slog.Any("error", err))
-		_ = r.messenger.SendMessage(ctx, chatID, "Could not list archived sessions.")
+		if sendErr := r.messenger.SendMessage(ctx, chatID, "Could not list archived sessions."); sendErr != nil {
+			r.logger.Error("messenger send failed", slog.Any("error", sendErr))
+		}
 		return
 	}
 
 	if len(sessions) == 0 {
-		_ = r.messenger.SendMessage(ctx, chatID, "No archived sessions found.")
+		if sendErr := r.messenger.SendMessage(ctx, chatID, "No archived sessions found."); sendErr != nil {
+			r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+		}
 		return
 	}
 
@@ -142,20 +152,28 @@ func (r *Router) handleSessionsCmd(ctx context.Context, chatID int64) {
 			s.ArchivedAt.Format(time.RFC3339)))
 	}
 
-	_ = r.messenger.SendMessage(ctx, chatID, strings.Join(lines, "\n"))
+	if sendErr := r.messenger.SendMessage(ctx, chatID, strings.Join(lines, "\n")); sendErr != nil {
+		r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+	}
 }
 
 func (r *Router) sendUnknownCommand(ctx context.Context, chatID int64) {
-	_ = r.messenger.SendMessage(ctx, chatID, "Command not found. Use /skills to see available commands.")
+	if sendErr := r.messenger.SendMessage(ctx, chatID, "Command not found. Use /skills to see available commands."); sendErr != nil {
+		r.logger.Warn("messenger send failed", slog.Any("error", sendErr))
+	}
 }
 
 func (r *Router) handleNormalMessage(ctx context.Context, chatID int64, text string) {
 	if r.processor != nil {
 		if err := r.processor.ProcessTurn(ctx, chatID, text); err != nil {
 			r.logger.Error("process turn failed", slog.Any("error", err))
-			_ = r.messenger.SendMessage(ctx, chatID, "Something went wrong processing your message.")
+			if sendErr := r.messenger.SendMessage(ctx, chatID, "Something went wrong processing your message."); sendErr != nil {
+				r.logger.Error("messenger send failed", slog.Any("error", sendErr))
+			}
 		}
 		return
 	}
-	_ = r.messenger.SendMessage(ctx, chatID, "Message received. The main agent is not yet online.")
+	if sendErr := r.messenger.SendMessage(ctx, chatID, "Message received. The main agent is not yet online."); sendErr != nil {
+		r.logger.Error("messenger send failed", slog.Any("error", sendErr))
+	}
 }

@@ -72,7 +72,7 @@ func startSessionManager(ctx context.Context, dbPath string, cfg *config.Config,
 	if cfg.SessionTTLDays > 0 {
 		ttl := time.Duration(cfg.SessionTTLDays) * 24 * time.Hour
 		if time.Since(activeSession.LastActivity) > ttl {
-			logger.Info("archiving stale session", slog.Int64("session_id", activeSession.ID))
+			logger.Warn("archiving stale session", slog.Int64("session_id", activeSession.ID))
 			if err := mgr.ArchiveSession(ctx, activeSession.ID); err != nil {
 				_ = mgr.Close()
 				return nil, nil, fmt.Errorf("archiving stale session: %w", err)

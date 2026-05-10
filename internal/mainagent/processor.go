@@ -354,14 +354,14 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 
 	// Update session tokens
 	if err := p.store.UpdateSessionTokens(ctx, session.ID, int64(result.InputTokens), int64(result.OutputTokens)); err != nil {
-		p.logger.Error("update session tokens failed", slog.Any("error", err))
+		p.logger.Warn("update session tokens failed", slog.Any("error", err))
 		_ = p.messenger.SendMessage(ctx, chatID, result.Content)
 		return nil
 	}
 
 	// Update last activity
 	if err := p.sessions.UpdateSessionActivity(ctx); err != nil {
-		p.logger.Error("update session activity failed", slog.Any("error", err))
+		p.logger.Warn("update session activity failed", slog.Any("error", err))
 		_ = p.messenger.SendMessage(ctx, chatID, result.Content)
 		return nil
 	}
@@ -370,7 +370,7 @@ func (p *Processor) ProcessTurn(ctx context.Context, chatID int64, text string) 
 	if session.Title == nil || *session.Title == "" {
 		title := truncateTitle(trimmed, 40)
 		if err := p.store.SetSessionTitle(ctx, session.ID, title); err != nil {
-			p.logger.Error("set session title failed", slog.Any("error", err))
+			p.logger.Warn("set session title failed", slog.Any("error", err))
 			// Non-critical, continue
 		}
 	}
@@ -429,14 +429,14 @@ func (p *Processor) processTurn2Plus(ctx context.Context, chatID int64, trimmed 
 
 	// Update session tokens
 	if err := p.store.UpdateSessionTokens(ctx, session.ID, int64(result.InputTokens), int64(result.OutputTokens)); err != nil {
-		p.logger.Error("update session tokens failed", slog.Any("error", err))
+		p.logger.Warn("update session tokens failed", slog.Any("error", err))
 		_ = p.messenger.SendMessage(ctx, chatID, extractReply(result))
 		return nil
 	}
 
 	// Update last activity
 	if err := p.sessions.UpdateSessionActivity(ctx); err != nil {
-		p.logger.Error("update session activity failed", slog.Any("error", err))
+		p.logger.Warn("update session activity failed", slog.Any("error", err))
 		_ = p.messenger.SendMessage(ctx, chatID, extractReply(result))
 		return nil
 	}

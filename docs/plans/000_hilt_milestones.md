@@ -148,7 +148,7 @@ All milestones are **tracer bullets** — vertical, end-to-end slices that prove
   - Verify all turns persisted in SQLite
   - Restart server → verify active session resumes correctly
 
-- [ ] **010: Cleanup — Code review, logging polish, and repository hygiene**
+- [x] **010: Cleanup — Code review, logging polish, and repository hygiene**
   - Review all error paths and logging levels
   - Ensure no hardcoded secrets or tokens in code
   - Add `README.md` with build and run instructions

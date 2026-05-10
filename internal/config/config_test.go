@@ -104,6 +104,9 @@ whisper_model = "base"
 		if cfg.WhisperModel != "small" {
 			t.Errorf("WhisperModel = %q, want small", cfg.WhisperModel)
 		}
+		if cfg.TelegramBotToken != "test-token" {
+			t.Errorf("TelegramBotToken = %q, want test-token", cfg.TelegramBotToken)
+		}
 	})
 
 	t.Run("empty file triggers auto-creation", func(t *testing.T) {
@@ -124,6 +127,9 @@ whisper_model = "base"
 		if cfg.SessionTTLDays != 30 {
 			t.Errorf("SessionTTLDays = %d, want 30", cfg.SessionTTLDays)
 		}
+		if cfg.TelegramBotToken != "test-token" {
+			t.Errorf("TelegramBotToken = %q, want test-token", cfg.TelegramBotToken)
+		}
 	})
 
 	t.Run("invalid TOML returns error", func(t *testing.T) {
@@ -134,6 +140,73 @@ whisper_model = "base"
 		_, err := Load(configPath)
 		if err == nil {
 			t.Fatal("expected error for invalid TOML, got nil")
+		}
+	})
+
+	t.Run("config path is a directory", func(t *testing.T) {
+		configDir := t.TempDir()
+		configPath := filepath.Join(configDir, "config.toml")
+		// Create a directory instead of a file
+		if err := os.MkdirAll(configPath, 0755); err != nil {
+			t.Fatalf("creating directory: %v", err)
+		}
+
+		_, err := Load(configPath)
+		if err == nil {
+			t.Fatal("expected error when config path is a directory, got nil")
+		}
+		if !errors.Is(err, internal.ErrInvalidConfig) {
+			t.Fatalf("expected error wrapping %v, got: %v", internal.ErrInvalidConfig, err)
+		}
+	})
+
+	t.Run("missing bot token in file and env", func(t *testing.T) {
+		workspaceDir := t.TempDir()
+		configDir := t.TempDir()
+		configContent := fmt.Sprintf(`telegram_bot_token = ""
+workspace_dir = "%s"
+session_ttl_days = 1
+context_window_default = 1
+whisper_model = "base"
+`, workspaceDir)
+		configPath := filepath.Join(configDir, "config.toml")
+		os.WriteFile(configPath, []byte(configContent), 0644)
+
+		// Ensure env var is unset
+		os.Unsetenv("TELEGRAM_BOT_TOKEN")
+
+		_, err := Load(configPath)
+		if err == nil {
+			t.Fatal("expected error when bot token missing, got nil")
+		}
+		if !errors.Is(err, internal.ErrInvalidConfig) {
+			t.Fatalf("expected error wrapping %v, got: %v", internal.ErrInvalidConfig, err)
+		}
+	})
+
+	t.Run("workspace_dir with leading tilde", func(t *testing.T) {
+		configDir := t.TempDir()
+		configPath := filepath.Join(configDir, "config.toml")
+		configContent := `telegram_bot_token = "token"
+workspace_dir = "~/.hilt-test"
+session_ttl_days = 1
+context_window_default = 1
+whisper_model = "base"
+`
+		os.WriteFile(configPath, []byte(configContent), 0644)
+
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skipf("could not get user home dir: %v", err)
+		}
+		want := filepath.Join(home, ".hilt-test")
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load unexpected error: %v", err)
+		}
+		if cfg.WorkspaceDir != want {
+			t.Errorf("WorkspaceDir = %q, want %q", cfg.WorkspaceDir, want)
 		}
 	})
 }
