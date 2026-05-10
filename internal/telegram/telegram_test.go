@@ -55,6 +55,7 @@ func TestIsTextMessage(t *testing.T) {
 }
 
 type fakeBotClient struct {
+	mu    sync.Mutex
 	calls []apiCall
 }
 
@@ -63,14 +64,23 @@ type apiCall struct {
 	params map[string]any
 }
 
-func (f *fakeBotClient) RequestWithContext(_ context.Context, _ string, method string, params map[string]any, _ *gotgbot.RequestOpts) (json.RawMessage, error) {
+func (f *fakeBotClient) recordCall(method string, params map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, apiCall{method: method, params: params})
+}
+
+func (f *fakeBotClient) RequestWithContext(_ context.Context, _ string, method string, params map[string]any, _ *gotgbot.RequestOpts) (json.RawMessage, error) {
+	f.recordCall(method, params)
 	switch method {
 	case "getMe":
 		raw, _ := json.Marshal(gotgbot.User{Id: 1, IsBot: true, FirstName: "TestBot"})
 		return json.RawMessage(raw), nil
 	case "sendMessage":
 		raw, _ := json.Marshal(gotgbot.Message{MessageId: 1})
+		return json.RawMessage(raw), nil
+	case "sendChatAction":
+		raw, _ := json.Marshal(true)
 		return json.RawMessage(raw), nil
 	case "deleteWebhook":
 		raw, _ := json.Marshal(true)
@@ -158,8 +168,23 @@ func TestHandleUpdate_AuthorizedText(t *testing.T) {
 	if gotText != "hello world" {
 		t.Fatalf("expected text 'hello world', got %q", gotText)
 	}
-	if len(client.calls) > 0 {
-		t.Fatalf("expected no API calls for text message, got %d", len(client.calls))
+
+	// Give the background typing goroutine a moment to see the cancelled context and exit.
+	time.Sleep(50 * time.Millisecond)
+
+	client.mu.Lock()
+	calls := make([]apiCall, len(client.calls))
+	copy(calls, client.calls)
+	client.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 API call (typing indicator), got %d", len(calls))
+	}
+	if calls[0].method != "sendChatAction" {
+		t.Fatalf("expected sendChatAction, got %s", calls[0].method)
+	}
+	if calls[0].params["action"] != "typing" {
+		t.Fatalf("expected action 'typing', got %v", calls[0].params["action"])
 	}
 }
 
@@ -188,10 +213,16 @@ func TestHandleUpdate_AuthorizedUnsupported(t *testing.T) {
 	if handlerCalled {
 		t.Fatal("handler should not be called for unsupported message")
 	}
-	if len(client.calls) != 1 {
-		t.Fatalf("expected 1 API call, got %d", len(client.calls))
+
+	client.mu.Lock()
+	calls := make([]apiCall, len(client.calls))
+	copy(calls, client.calls)
+	client.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 API call, got %d", len(calls))
 	}
-	call := client.calls[0]
+	call := calls[0]
 	if call.method != "sendMessage" {
 		t.Fatalf("expected sendMessage, got %s", call.method)
 	}
@@ -220,8 +251,13 @@ func TestHandleUpdate_NilMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(client.calls) > 0 {
-		t.Fatalf("expected no API calls, got %d", len(client.calls))
+
+	client.mu.Lock()
+	callCount := len(client.calls)
+	client.mu.Unlock()
+
+	if callCount > 0 {
+		t.Fatalf("expected no API calls, got %d", callCount)
 	}
 }
 
@@ -247,8 +283,13 @@ func TestHandleUpdate_NilFrom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(client.calls) > 0 {
-		t.Fatalf("expected no API calls, got %d", len(client.calls))
+
+	client.mu.Lock()
+	callCount := len(client.calls)
+	client.mu.Unlock()
+
+	if callCount > 0 {
+		t.Fatalf("expected no API calls, got %d", callCount)
 	}
 }
 
@@ -259,10 +300,16 @@ func TestSendMessage_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(client.calls) != 1 {
-		t.Fatalf("expected 1 API call, got %d", len(client.calls))
+
+	client.mu.Lock()
+	calls := make([]apiCall, len(client.calls))
+	copy(calls, client.calls)
+	client.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 API call, got %d", len(calls))
 	}
-	call := client.calls[0]
+	call := calls[0]
 	if call.method != "sendMessage" {
 		t.Fatalf("expected sendMessage, got %s", call.method)
 	}
@@ -287,6 +334,35 @@ func (brokenClient) RequestWithContext(_ context.Context, _ string, method strin
 
 func (brokenClient) GetAPIURL(_ *gotgbot.RequestOpts) string                   { return "" }
 func (brokenClient) FileURL(_ string, _ string, _ *gotgbot.RequestOpts) string { return "" }
+
+func TestSendTyping_Success(t *testing.T) {
+	bot, client := newFakeBot()
+
+	err := bot.SendTyping(context.Background(), 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	client.mu.Lock()
+	calls := make([]apiCall, len(client.calls))
+	copy(calls, client.calls)
+	client.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 API call, got %d", len(calls))
+	}
+	call := calls[0]
+	if call.method != "sendChatAction" {
+		t.Fatalf("expected sendChatAction, got %s", call.method)
+	}
+	if call.params["action"] != "typing" {
+		t.Fatalf("expected action 'typing', got %v", call.params["action"])
+	}
+	chatID, ok := call.params["chat_id"].(int64)
+	if !ok || chatID != 42 {
+		t.Fatalf("expected chat_id 42, got %v", call.params["chat_id"])
+	}
+}
 
 func TestSendMessage_Error(t *testing.T) {
 	api := &gotgbot.Bot{
@@ -327,17 +403,27 @@ func TestNewBot_Integration(t *testing.T) {
 }
 
 type startTestClient struct {
+	mu    sync.Mutex
 	calls []apiCall
 }
 
-func (s *startTestClient) RequestWithContext(ctx context.Context, _ string, method string, params map[string]any, _ *gotgbot.RequestOpts) (json.RawMessage, error) {
+func (s *startTestClient) recordCall(method string, params map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.calls = append(s.calls, apiCall{method: method, params: params})
+}
+
+func (s *startTestClient) RequestWithContext(ctx context.Context, _ string, method string, params map[string]any, _ *gotgbot.RequestOpts) (json.RawMessage, error) {
+	s.recordCall(method, params)
 	switch method {
 	case "getMe":
 		raw, _ := json.Marshal(gotgbot.User{Id: 1, IsBot: true, FirstName: "TestBot"})
 		return json.RawMessage(raw), nil
 	case "sendMessage":
 		raw, _ := json.Marshal(gotgbot.Message{MessageId: 1})
+		return json.RawMessage(raw), nil
+	case "sendChatAction":
+		raw, _ := json.Marshal(true)
 		return json.RawMessage(raw), nil
 	case "deleteWebhook":
 		raw, _ := json.Marshal(true)

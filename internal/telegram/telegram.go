@@ -73,6 +73,15 @@ func (bot *Bot) SendMessage(ctx context.Context, chatID int64, text string) erro
 	return nil
 }
 
+// SendTyping sends the typing chat action to the specified chat.
+func (bot *Bot) SendTyping(ctx context.Context, chatID int64) error {
+	_, err := bot.api.SendChatActionWithContext(ctx, chatID, gotgbot.ChatActionTyping, nil)
+	if err != nil {
+		return fmt.Errorf("sending typing action: %w", err)
+	}
+	return nil
+}
+
 // handleUpdate classifies an incoming update and routes text messages to the handler.
 func (bot *Bot) handleUpdate(rootCtx context.Context, extCtx *ext.Context, handler MessageHandler) error {
 	msg := extCtx.EffectiveMessage
@@ -86,9 +95,37 @@ func (bot *Bot) handleUpdate(rootCtx context.Context, extCtx *ext.Context, handl
 		return nil // silently drop unauthorized
 	}
 	if bot.isTextMessage(msg) {
+		ctx, cancel := context.WithCancel(rootCtx)
+		defer cancel()
+
+		// Start a background goroutine to keep the "typing" indicator alive
+		// while the LLM is processing the request.
+		go bot.keepTypingAlive(ctx, msg.Chat.Id)
+
 		return handler(rootCtx, msg.Chat.Id, msg.Text)
 	}
 	return bot.SendMessage(rootCtx, msg.Chat.Id, "Hilt only processes text and voice messages.")
+}
+
+// keepTypingAlive sends the typing chat action every 4 seconds until the context is cancelled.
+func (bot *Bot) keepTypingAlive(ctx context.Context, chatID int64) {
+	// Send immediately on start
+	_ = bot.SendTyping(ctx, chatID)
+
+	ticker := time.NewTicker(4 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := bot.SendTyping(ctx, chatID); err != nil {
+				// Typing indicator failures are non-critical; stop trying.
+				return
+			}
+		}
+	}
 }
 
 // isTextMessage determines whether the message is plain text (no media attachments).
