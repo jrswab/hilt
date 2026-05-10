@@ -31,4 +31,4 @@ go.work.sum
 # .idea/
 # .vscode/
 # Built binary from go build
-hilt
+/hilt

@@ -139,7 +139,7 @@ All milestones are **tracer bullets** — vertical, end-to-end slices that prove
   - Generic fallback → "I couldn't process that request: ..."
   - Ensure all errors send a Telegram reply; never swallow silently
 
-- [ ] **009: Integration — End-to-end smoke test**
+- [x] **009: Integration — End-to-end smoke test**
   - Start server with valid config
   - Send first Telegram message → verify context assembly, Axe call, reply received
   - Send second message → verify history is loaded, turn number increments
